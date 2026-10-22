@@ -25,6 +25,14 @@ export function buildShell(app) {
     icon('chevron-down', 12),
   );
   const title = h('div.title');
+  /** Live status chip ("Live · Saved" / "Saving…" / "Reconnecting…"), filled by app.js. */
+  const liveChip = h('span.live-chip', { hidden: true });
+  /** Share button, shown when the active drawing is a server .cad. */
+  const shareBtn = h(
+    'button.icon-btn.qat-btn',
+    { type: 'button', hidden: true, 'aria-label': 'Share this drawing', 'aria-haspopup': 'dialog', 'data-tip': 'Share', onClick: (e) => app.shareDrawing(e.currentTarget) },
+    icon('share', 16),
+  );
   const search = h(
     'button.search-btn',
     { type: 'button', 'aria-label': 'Search commands', 'aria-haspopup': 'dialog', 'data-tip': 'Search commands', 'data-tip-keys': `${MOD}+K`, onClick: () => app.commandPalette() },
@@ -33,6 +41,8 @@ export function buildShell(app) {
     h('kbd', `${MOD} K`),
   );
   const account = h('div.account');
+  /** Avatars of the other people currently in this live drawing. */
+  const peers = h('div.tb-peers');
   const themeBtn = h('button.icon-btn', { type: 'button', 'aria-label': 'Theme', 'aria-haspopup': 'menu', 'data-tip': 'Theme', onClick: (e) => app.themeMenu(e.currentTarget) }, icon('monitor', 17));
   const github = h(
     'a.icon-btn.github-link',
@@ -59,7 +69,8 @@ export function buildShell(app) {
       ),
     ),
     title,
-    h('div.tb-right', search, themeBtn, helpBtn, github, account, moreBtn),
+    liveChip,
+    h('div.tb-right', shareBtn, peers, search, themeBtn, helpBtn, github, account, moreBtn),
   );
 
   const doctabs = h('div.doctabs', { role: 'tablist', 'aria-label': 'Open drawings' });
@@ -102,7 +113,7 @@ export function buildShell(app) {
   const phonebar = h('nav.phonebar', { 'aria-label': 'Tools' });
 
   const root = h('div.app-root', titlebar, h('div.ribbon-slot'), docbar, workspace, h('div.status-slot'), phonebar);
-  return { root, titlebar, title, account, themeBtn, undoBtn, redoBtn, doctabs, glCanvas, overlay, canvasWrap, nav, emptyState, dock, dockTabs, dockBody, dockResize, workspace, phonebar, github };
+  return { root, titlebar, title, liveChip, shareBtn, peers, account, themeBtn, undoBtn, redoBtn, doctabs, glCanvas, overlay, canvasWrap, nav, emptyState, dock, dockTabs, dockBody, dockResize, workspace, phonebar, github };
 }
 
 function navBtn(app, ic, label, fn) {

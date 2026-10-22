@@ -188,12 +188,105 @@
   color: var(--fg-faint);
 }
 
+.file-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  color: var(--fg-muted);
+  vertical-align: 1px;
+}
+
+.file-head {
+  padding: 10px 10px 0;
+}
+
 .file-empty {
   display: grid;
   gap: 10px;
   justify-items: start;
   padding: 12px;
   color: var(--fg-muted);
+}
+
+/* Share dialog */
+
+.share-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  min-width: 0;
+}
+
+.share-row.head {
+  border-bottom: 1px solid var(--border-strong);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--fg-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.share-who {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+}
+
+.share-mode {
+  flex: 0 0 auto;
+  min-width: 72px;
+  font-size: var(--fs-xs);
+  color: var(--fg-muted);
+}
+
+.share-act {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.share-add {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.share-add .input:first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.share-add .input:nth-child(2),
+.share-add .input:nth-child(3) {
+  flex: 0 0 auto;
+  width: auto;
+}
+
+.share-url {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.share-meta {
+  display: block;
+  flex: 0 0 auto;
+  font-size: var(--fs-xs);
+  color: var(--fg-faint);
 }
 
 /* Plot dialog */

@@ -6,7 +6,15 @@
  * lets caches key on object identity.
  *
  * Every committed change is reported to listeners as
- *   { ids: Set<number>, tables: boolean, header: boolean, blocks: Set<string> }
+ *   { ids: Set<number>, tables: boolean, header: boolean, blocks: Set<string>, remote?: true }
+ *
+ * Live co-editing (collab/live.js) hooks in through:
+ *   opsListener(entries)  called after every local commit, undo and redo with
+ *                         the records actually applied: [{ rec, reverse }]
+ *   applyRemote(ops)      someone else's changes; never touches undo/redo
+ *   idSource()            new entity ids from the server's lease
+ *   live                  undo/redo skip records another person changed since
+ *   readOnly              transaction() throws ReadOnlyError
  */
 import { defaultHeader, defaultLayer } from './schema.js';
 import { STANDARD_LINETYPES } from './linetypes.js';
@@ -14,6 +22,13 @@ import { defaultTextStyle, defaultDimStyle } from './styles.js';
 
 const TABLES = ['layers', 'linetypes', 'textStyles', 'dimStyles'];
 const UNDO_LIMIT = 500;
+
+export class ReadOnlyError extends Error {
+  constructor() {
+    super('This drawing is view-only.');
+    this.name = 'ReadOnlyError';
+  }
+}
 
 export class Drawing {
   constructor(data) {
@@ -39,6 +54,12 @@ export class Drawing {
     /** Count of steps dropped off the bottom of the undo stack (keeps saved indices valid). */
     this.shifted = 0;
     this.savedRevision = 0;
+    this.opsListener = null;
+    this.idSource = null;
+    this.live = false;
+    this.readOnly = false;
+    /** Set by undo()/redo() in live mode when every record was skipped. */
+    this.lastSkipped = false;
     if (data) this.load(data);
     this.ensureDefaults();
   }
@@ -119,6 +140,10 @@ export class Drawing {
   }
 
   newId() {
+    if (this.idSource) {
+      const id = this.idSource();
+      if (typeof id === 'number' && Number.isFinite(id)) return id;
+    }
     return this.header.nextId++;
   }
 
@@ -135,6 +160,7 @@ export class Drawing {
         this._depth--;
       }
     }
+    if (this.readOnly) throw new ReadOnlyError();
     this._tx = { label, records: [], change: newChange() };
     let result;
     try {
@@ -158,6 +184,7 @@ export class Drawing {
       this.redoStack.length = 0;
       this.revision++;
       this._emit(this._finish(tx.change));
+      this.opsListener?.(tx.records.map((rec) => ({ rec, reverse: false })));
     }
     return result;
   }
@@ -262,7 +289,7 @@ export class Drawing {
     const moved = before.filter((id) => set.has(id));
     const rest = before.filter((id) => !set.has(id));
     const after = toFront ? rest.concat(moved) : moved.concat(rest);
-    this._record({ kind: 'order', before, after });
+    this._record({ kind: 'order', before, after, ids: moved, toFront: !!toFront });
   }
 
   // Tables -------------------------------------------------------------
@@ -297,25 +324,153 @@ export class Drawing {
   }
 
   undo() {
+    if (this.readOnly) throw new ReadOnlyError();
     const step = this.undoStack.pop();
     if (!step) return null;
     const change = newChange();
-    for (let i = step.records.length - 1; i >= 0; i--) this._apply(step.records[i], true, change);
+    const applied = [];
+    for (let i = step.records.length - 1; i >= 0; i--) this._step(step.records[i], true, change, applied);
     this.redoStack.push(step);
-    this.revision++;
-    this._emit(this._finish(change));
+    this.lastSkipped = !applied.length && step.records.length > 0;
+    if (applied.length) {
+      this.revision++;
+      this._emit(this._finish(change));
+      this.opsListener?.(applied);
+    }
     return step.label;
   }
 
   redo() {
+    if (this.readOnly) throw new ReadOnlyError();
     const step = this.redoStack.pop();
     if (!step) return null;
     const change = newChange();
-    for (const rec of step.records) this._apply(rec, false, change);
+    const applied = [];
+    for (const rec of step.records) this._step(rec, false, change, applied);
     this.undoStack.push(step);
+    this.lastSkipped = !applied.length && step.records.length > 0;
+    if (applied.length) {
+      this.revision++;
+      this._emit(this._finish(change));
+      this.opsListener?.(applied);
+    }
+    return step.label;
+  }
+
+  /**
+   * Apply one undo/redo record. In live mode a record whose object someone
+   * else changed since is skipped, so their newer work is never reverted;
+   * header records only touch fields nobody changed; draw-order records move
+   * the same ids relative to the current order.
+   */
+  _step(rec, reverse, change, applied) {
+    if (!this.live) {
+      this._apply(rec, reverse, change);
+      applied.push({ rec, reverse });
+      return;
+    }
+    const expected = reverse ? rec.after : rec.before;
+    switch (rec.kind) {
+      case 'ent':
+        if ((this.entities.get(rec.id) ?? null) !== expected) return;
+        break;
+      case 'table':
+        if ((this[rec.table].get(rec.key) ?? null) !== expected) return;
+        break;
+      case 'block':
+        if ((this.blocks.get(rec.key) ?? null) !== expected) return;
+        break;
+      case 'header': {
+        const from = reverse ? rec.after : rec.before;
+        const to = reverse ? rec.before : rec.after;
+        const patch = {};
+        for (const k of new Set([...Object.keys(from), ...Object.keys(to)])) {
+          if (k === 'nextId' || from[k] === to[k] || this.header[k] !== from[k]) continue;
+          patch[k] = to[k];
+        }
+        if (!Object.keys(patch).length) return;
+        const r = { kind: 'header', before: this.header, after: { ...this.header, ...patch } };
+        this._apply(r, false, change);
+        applied.push({ rec: r, reverse: false });
+        return;
+      }
+      case 'order': {
+        if (!rec.ids) break;
+        const front = reverse ? !rec.toFront : rec.toFront;
+        const r = { kind: 'order', before: [...this.entities.keys()], after: reorderIds([...this.entities.keys()], rec.ids, front), ids: rec.ids, toFront: front };
+        this._apply(r, false, change);
+        applied.push({ rec: r, reverse: false });
+        return;
+      }
+    }
+    this._apply(rec, reverse, change);
+    applied.push({ rec, reverse });
+  }
+
+  // Live co-editing ----------------------------------------------------------
+
+  /**
+   * Apply changes from someone else: absolute values, last writer wins.
+   * ops: [{k:'ent', id, v}, {k:'table', table, key, v}, {k:'block', key, v},
+   *       {k:'header', patch}, {k:'order', ids, front}]
+   */
+  applyRemote(ops) {
+    if (!ops?.length) return;
+    const change = newChange();
+    for (const op of ops) {
+      switch (op.k) {
+        case 'ent':
+          if (op.v) {
+            if (!this.entities.has(op.id)) this.orderKey.set(op.id, ++this.nextOrder);
+            this.entities.set(op.id, op.v);
+          } else this.entities.delete(op.id);
+          change.ids.add(op.id);
+          break;
+        case 'table':
+          if (!TABLES.includes(op.table)) break;
+          if (op.v) this[op.table].set(op.key, op.v);
+          else this[op.table].delete(op.key);
+          change.tables = true;
+          change.tableNames.add(op.table);
+          change.tableKeys.add(`${op.table}:${op.key}`);
+          break;
+        case 'block':
+          if (op.v) this.blocks.set(op.key, op.v);
+          else this.blocks.delete(op.key);
+          change.blocks.add(op.key);
+          break;
+        case 'header': {
+          const patch = { ...op.patch };
+          delete patch.nextId;
+          for (const k of Object.keys(patch)) if (this.header[k] !== patch[k]) change.headerKeys.add(k);
+          this.header = { ...this.header, ...patch };
+          change.header = true;
+          break;
+        }
+        case 'order':
+          this._apply({ kind: 'order', after: reorderIds([...this.entities.keys()], op.ids, op.front) }, false, change);
+          break;
+      }
+    }
+    if (this.header.clayer && !this.layers.has(this.header.clayer)) this.header = { ...this.header, clayer: '0' };
+    this.ensureDefaults();
+    this.revision++;
+    change.remote = true;
+    this._emit(this._finish(change));
+  }
+
+  /** Adopt the server's draw order (ids it does not know stay at the end). No undo record. */
+  setOrder(ids) {
+    const known = ids.filter((id) => this.entities.has(id));
+    const seen = new Set(known);
+    const next = known.concat([...this.entities.keys()].filter((id) => !seen.has(id)));
+    const cur = [...this.entities.keys()];
+    if (next.length === cur.length && next.every((id, i) => id === cur[i])) return;
+    const change = newChange();
+    this._apply({ kind: 'order', after: next }, false, change);
+    change.remote = true;
     this.revision++;
     this._emit(this._finish(change));
-    return step.label;
   }
 
   /**
@@ -356,8 +511,16 @@ export class Drawing {
   /** True if entities on this layer can be selected and edited. */
   layerEditable(name) {
     const l = this.layers.get(name);
-    return !l || (l.on && !l.frozen && !l.locked);
+    return !l || !!((l.on && !l.frozen && !l.locked));
   }
+}
+
+/** Move `ids` to the front (drawn last) or the back of `order`. */
+export function reorderIds(order, ids, front) {
+  const set = new Set(ids);
+  const moved = order.filter((id) => set.has(id));
+  const rest = order.filter((id) => !set.has(id));
+  return front ? rest.concat(moved) : moved.concat(rest);
 }
 
 function newChange() {

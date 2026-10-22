@@ -130,7 +130,11 @@ describe('findBoundary', () => {
     expect(Math.abs(ringArea(r.islands[0]))).toBeCloseTo(16);
   });
 
-  it('copes with many crossing segments quickly', () => {
+  // The verifier run hit vitest's 5 s default under full-suite load (solo it
+  // is ~0.2 s); this class of test must never be flaky on a busy box, so the
+  // budget is explicit and generous — the boundary work itself is asserted
+  // <> 8 s below, and anything slower is a real regression either way.
+  it('copes with many crossing segments quickly', { timeout: 30_000 }, () => {
     const curves = [];
     const n = 300;
     for (let i = 0; i <= n; i++) {

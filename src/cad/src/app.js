@@ -15,11 +15,15 @@ import { PropertiesPalette } from './ui/properties.js';
 import { LayerManager } from './ui/layers.js';
 import { BlockLibrary } from './ui/blocks.js';
 import { TextEditor } from './ui/textedit.js';
+import { AssistantPanel } from './ui/assistant.js';
 import { hatchTab } from './ui/hatchtab.js';
 import * as dialogs from './ui/dialogs.js';
 import { Drawing } from './core/drawing.js';
 import { sampleDrawing } from './core/sample.js';
 import { SpatialIndex } from './core/spatial.js';
+import { LiveSession } from './collab/live.js';
+import { avatarStack, decorate } from './collab/presence.js';
+import { liveUrl, guestShareInfo } from './local-cloud.js';
 import { STANDARD_LINETYPES } from './core/linetypes.js';
 import { Camera } from './render/camera.js';
 import { Renderer } from './render/renderer.js';
@@ -66,6 +70,7 @@ export class App {
     this.clipboard = null;
     this.user = null;
     this.signedIn = false;
+    this.guest = platform.puterEnv() === 'guest';
     this._autosaveTimers = new Map();
     this._autosaving = new Set();
   }
@@ -88,6 +93,7 @@ export class App {
     this.layers = new LayerManager(this);
     this.blocks = new BlockLibrary(this);
     this.textEditor = new TextEditor(this);
+    this.assistant = this.guest ? null : new AssistantPanel(this);
 
     this.camera = new Camera();
     try {
@@ -108,6 +114,7 @@ export class App {
       ui: this.editorUI(),
     });
     this.editor.editText = (opts) => this.editText(opts);
+    this.editor.remote = (state, cam) => this.remoteOverlay(state, cam);
     this.settings = this.editor.settings;
 
     this.applyTheme();
@@ -120,7 +127,12 @@ export class App {
 
     // Only one tab restores and records the session; others start fresh.
     this.ownsSession = await storage.acquireSessionLock();
-    if (this.ownsSession) await this.restoreSession();
+    this.peerStack = avatarStack();
+    shell.peers.append(this.peerStack);
+    // The cursor position for live presence as it moves on the canvas.
+    shell.overlay.addEventListener('pointermove', () => this.sendPresence(), { passive: true });
+    if (this.guest) await this.bootGuest();
+    else if (this.ownsSession) await this.restoreSession();
     const params = new URLSearchParams(location.search);
     if (params.has('sample')) {
       this.openSample();
@@ -138,8 +150,10 @@ export class App {
       // A recovery copy still being written may not finish before unload.
       const pending = this._autosaveTimers.size > 0 || this._autosaving.size > 0;
       this.flushAutosave();
-      // Without working recovery copies, unsaved work would be lost.
-      if (this.docs.some((d) => d.drawing.modified) && (pending || !this.ownsSession || this.recoveryFailed)) {
+      // Without working recovery copies, unsaved work would be lost. Live
+      // drawings still have local edits on their way to the server.
+      const unsafe = this.docs.some((d) => d.drawing.modified && !d.live) || (pending || !this.ownsSession || this.recoveryFailed) && this.docs.some((d) => d.drawing.modified) || this.docs.some((d) => d.live?.unsaved);
+      if (unsafe) {
         e.preventDefault();
         e.returnValue = '';
       }
@@ -219,7 +233,10 @@ export class App {
     else this.zoomExtentsSoon();
     this.editor.attach(doc);
     this.shell.emptyState.hidden = true;
+    this.assistant?.docChanged?.();
     this.refreshAll();
+    this.renderLive();
+    this.editor.drawOverlay();
     this.saveSession();
   }
 
@@ -253,7 +270,9 @@ export class App {
       this.editor.drawOverlay();
       this.scheduleRefresh(change);
     }
-    this.scheduleAutosave(doc);
+    // Someone else's change: the server saves it, recovery copies would only
+    // resurrect old versions.
+    if (!change.remote) this.scheduleAutosave(doc);
   }
 
   scheduleRefresh(change) {
@@ -327,7 +346,8 @@ export class App {
     if (!doc || doc._closing) return;
     doc._closing = true;
     try {
-      if (doc.drawing.modified) {
+      // Live drawings are saved by the server; closing one loses nothing.
+      if (doc.drawing.modified && !doc.live) {
         const r = await unsavedDialog(doc.name);
         if (r === null) return;
         if (r === 'save' && !(await this.save(doc))) return;
@@ -339,6 +359,8 @@ export class App {
     // Already closed while the prompt or save was pending.
     if (i < 0) return;
     this.docs.splice(i, 1);
+    doc.live?.close();
+    doc.live = null;
     clearTimeout(this._autosaveTimers.get(doc.id));
     this._autosaveTimers.delete(doc.id);
     storage.recovery.delete(doc.id);
@@ -406,7 +428,9 @@ export class App {
   }
 
   async _autosave(doc) {
-    if (!this.ownsSession || !this.docs.includes(doc)) return;
+    // Live drawings are saved by the server; IndexedDB recovery copies would
+    // only restore stale versions over it.
+    if (!this.ownsSession || !this.docs.includes(doc) || doc.live) return;
     // Read the flag with the data: edits made while encoding belong to the next copy.
     const modified = doc.drawing.modified;
     try {
@@ -499,8 +523,7 @@ export class App {
         const f = await storage.deviceOpen();
         if (f) await this.openBuffer(f.buffer, f.name, { source: 'device', handle: f.handle, path: null });
       } else if (choice.source === 'cloud') {
-        const buf = await storage.cloudRead(choice.path);
-        await this.openBuffer(buf, choice.name, { source: 'cloud', path: choice.path });
+        await this.openServer(choice.path, choice.name);
       }
     } catch (err) {
       this.fileError('open', err);
@@ -565,6 +588,12 @@ export class App {
   async save(arg) {
     const doc = arg instanceof Doc ? arg : this.doc;
     if (!doc) return false;
+    if (doc.live) {
+      // The server holds the file; ask it to write what we have now.
+      doc.live.flush();
+      this.cmdline.log('Saved on the server, live', 'muted');
+      return true;
+    }
     if (!doc.file || (!doc.file.path && !doc.file.handle)) return this.saveAs(doc);
     const kind = doc.file.kind || 'native';
     // Edits made while the file is written stay unsaved.
@@ -573,7 +602,7 @@ export class App {
       const blob = await this.encode(doc, kind);
       let downloaded = false;
       if (doc.file.source === 'cloud') {
-        if (!(await this.ensureSignedIn('save to your Puter drive'))) return false;
+        if (!(await this.ensureSignedIn('save to your server drive'))) return false;
         await storage.cloudWrite(doc.file.path, blob);
       } else {
         const r = await storage.deviceSave(blob, doc.file.name || `${doc.name}${kind === 'dxf' ? '.dxf' : NATIVE_EXT}`, doc.file.handle);
@@ -594,6 +623,15 @@ export class App {
     this.refreshAll();
     this.autosave(doc);
     toast(downloaded ? `Downloaded ${name}. Find it in your downloads folder.` : `Saved ${name}`, { kind: 'success' });
+  }
+
+  /** After Save as, a live doc becomes the server drawing at its new path. */
+  rejoinLive(doc, path, name) {
+    if (!doc.live) return;
+    doc.live.close();
+    const session = new LiveSession({ url: liveUrl(path) });
+    session._adopt = doc;
+    this.wireSession(session, { path, name });
   }
 
   async saveAs(arg) {
@@ -626,7 +664,7 @@ export class App {
       const fileName = `${target.name}${target.kind === 'dxf' ? '.dxf' : NATIVE_EXT}`;
       let downloaded = false;
       if (target.source === 'cloud') {
-        if (!(await this.ensureSignedIn('save to your Puter drive'))) return false;
+        if (!(await this.ensureSignedIn('save to your server drive'))) return false;
         const path = `${storage.CLOUD_DIR}/${fileName}`;
         const same = !!doc.file?.path && (doc.file.path === path || doc.file.path.endsWith(`/${path}`));
         let item;
@@ -640,6 +678,8 @@ export class App {
         }
         doc.file = { source: 'cloud', path: item?.path || path, kind: target.kind, name: fileName };
         storage.addRecent({ name: fileName, path: doc.file.path, source: 'cloud' });
+        // Save as of a live drawing: keep working on the new file, live.
+        if (doc.live && target.kind === 'native') this.rejoinLive(doc, doc.file.path, fileName);
       } else {
         const r = await storage.deviceSave(blob, fileName, null);
         if (!r) return false;
@@ -714,20 +754,279 @@ export class App {
     }
   }
 
+  // Live co-editing ---------------------------------------------------------------------
+
+  /**
+   * Open a drawing on the server drive. A .cad is always opened live: the
+   * server holds the saving copy and every open tab joins the same session.
+   * A .dxf (no live editing yet) and .cad guests share links, are read
+   * through the normal file routes.
+   */
+  async openServer(path, name) {
+    if (/\.cad$/i.test(name)) {
+      const existing = this.docs.find((d) => d.file?.path === path);
+      if (existing) {
+        this.activate(existing);
+        return existing;
+      }
+      return this.openLive(path, name, {});
+    }
+    const buf = await storage.cloudRead(path);
+    return this.openBuffer(buf, name, { source: 'cloud', path });
+  }
+
+  /**
+   * Join a drawing live. The drawing itself is loaded from the session's
+   * snapshot; `presence` ({ name, color }) is only used for link guests.
+   */
+  openLive(path, name, presence = {}) {
+    const session = new LiveSession({ url: liveUrl(path), name: presence.name || null, color: presence.color || null });
+    return this.wireSession(session, { path, name });
+  }
+
+  /** Event wiring shared by opening and Save as of a live drawing. */
+  wireSession(session, info) {
+    session.on('snapshot', (data, meta) => this.liveSnapshot(session, data, meta, info));
+    session.on('status', () => this.renderLive());
+    session.on('peers', () => this.renderPeers());
+    session.on('presence', () => this.editor?.drawOverlay());
+    session.on('saved', () => {
+      const d = this.docFor(session);
+      if (d) d.drawing.markSaved(d.drawing.revision);
+      this.refreshAll();
+    });
+    session.on('mode', () => {
+      this.refreshAll();
+      this.renderLive();
+      this.editor?.drawOverlay();
+    });
+    session.on('serverError', ({ code, message }) => {
+      if (code === 'save_failed') toast('Changes are not being saved on the server. Edits are kept and the save is retried.', { kind: 'error' });
+      else if (message) toast(message, { kind: 'error', timeout: 7000 });
+      this.renderLive();
+    });
+    session.on('closed', (reason) => this.liveClosed(session, reason));
+    session.on('failed', (message) => this.liveFailed(session, message, info));
+    session.connect();
+    return session;
+  }
+
+  docFor(session) {
+    return this.docs.find((d) => d.live === session);
+  }
+
+  /** Share button in the title bar; only server drawings can be shared. */
+  shareDrawing() {
+    const doc = this.doc;
+    if (this.guest || !doc) return;
+    if (doc.live) return dialogs.shareDialog(this, doc);
+    if (doc.file?.path && /\.dxf$/i.test(doc.file.path)) return dialogs.shareAsCad(this, doc);
+  }
+
+  /** A past snapshot opened as its own tab (not live). */
+  async openVersionCopy(blob, name) {
+    const drawing = new Drawing(await decodeDrawing(await blob.arrayBuffer()));
+    const doc = this.addDoc(drawing, `${baseName(name)} (past version)`);
+    this.zoomExtentsSoon();
+    this.cmdline.log(`Opened a past version of ${name}. It is not connected to the live drawing.`, 'muted');
+    return doc;
+  }
+
+  /** The session came back with the full, current drawing: make a doc for it. */
+  liveSnapshot(session, data, { reason }, { path, name }) {
+    // After Save as, the doc keeps its tab; only its drawing is replaced.
+    const adopt = session._adopt;
+    if (adopt && this.docs.includes(adopt)) {
+      session._adopt = null;
+      const drawing = new Drawing(data);
+      this.swapDrawing(adopt, drawing);
+      session.attach(drawing);
+      adopt.file = { source: 'cloud', path, kind: 'native', name };
+      adopt.name = baseName(name);
+      adopt.live = session;
+      toast(`Now live as ${name}`, { kind: 'success' });
+      this.refreshAll();
+      this.renderLive();
+      renderDocTabs(this, this.shell.doctabs);
+      return adopt;
+    }
+    const existing = path && this.docs.find((d) => d.file?.path === path);
+    if (existing) {
+      // It opened twice in the instant between click and welcome.
+      session.close();
+      this.activate(existing);
+      return;
+    }
+    const drawing = new Drawing(data);
+    const doc = this.addDoc(drawing, baseName(name), { source: 'cloud', path, kind: 'native', name });
+    session.attach(drawing);
+    doc.live = session;
+    // A blank replacement should not swallow a live doc that was still arriving.
+    const blank = this.docs.find((d) => d !== doc && !d.file && !d.drawing.entities.size && !d.drawing.modified && !d.drawing.canUndo);
+    if (blank) this.closeDrawing(blank);
+    this.zoomExtentsSoon();
+    if (reason === 'restored') toast('An earlier version was restored. Your undo history was cleared.', { timeout: 7000 });
+    else if (reason === 'resync') toast('This drawing had to reload from the server. Your undo history was cleared.', { timeout: 7000 });
+    this.cmdline.log(`Opened ${name} live (${drawing.entities.size.toLocaleString()} objects)`, 'muted');
+    this.renderLive();
+    this.editor.drawOverlay();
+    return doc;
+  }
+
+  /** Replace a doc's drawing object with a new one, keeping its tab. */
+  swapDrawing(doc, drawing) {
+    doc.drawing = drawing;
+    doc.index = new SpatialIndex(drawing);
+    doc.selection = new Set();
+    if (doc === this.doc) {
+      this.renderer.setDrawing(drawing);
+      this.editor.attach(doc);
+    }
+  }
+
+  liveClosed(session, reason) {
+    const doc = this.docFor(session);
+    if (!doc) return;
+    // Everything is still in this tab. It becomes an unsaved local copy, so
+    // nothing is lost even though the live session is over.
+    session.detach();
+    doc.live = null;
+    doc.file = { source: 'local', path: null, kind: 'native' };
+    doc.name = `${doc.name} (local copy)`;
+    doc.drawing.savedRevision = -1;
+    this.renderLive();
+    renderDocTabs(this, this.shell.doctabs);
+    const messages = {
+      deleted: 'This drawing was deleted on the server. A local copy with everything you had is still open.',
+      revoked: 'The share link to this drawing was revoked. A local copy is still open.',
+      access_removed: 'Your access to this drawing ended. A local copy is still open.',
+      shutdown: 'The server shut down. A local copy is still open; it will reconnect after the server restarts.',
+    };
+    confirmDialog('Live session ended', messages[reason] || 'The live session ended. A local copy of the drawing is still open.', { confirm: 'Keep working', danger: false }).catch(() => {});
+  }
+
+  /** The session could not join at all: fall back to a read-through copy. */
+  async liveFailed(session, message, { path, name }) {
+    session.close();
+    if (!this.guest && path) {
+      try {
+        const buf = await storage.cloudRead(path);
+        await this.openBuffer(buf, name, { source: 'cloud', path });
+        toast(`${baseName(name)} opened without live editing: ${message || 'the live session did not open'}`, { kind: 'error', timeout: 9000 });
+        return;
+      } catch (err) {
+        this.fileError('open', err);
+        return;
+      }
+    }
+    toast(message || 'Could not open this shared drawing for live editing.', { kind: 'error' });
+  }
+
+  /**
+   * The other people, drawn on the overlay: their named cursor arrows and
+   * outlines around what they selected, in their colour.
+   */
+  remoteOverlay(state, cam) {
+    const session = this.doc?.live;
+    if (!session) return;
+    const out = [];
+    for (const p of decorate([...session.peers.values()])) {
+      const boxes = [];
+      for (const id of (p.sel || []).slice(0, 100)) {
+        const b = this.doc.index.bounds(id);
+        if (!b) continue;
+        const a = cam.toScreen(b[0], b[1]);
+        const c = cam.toScreen(b[2], b[3]);
+        boxes.push({ x1: a.x, y1: a.y, x2: c.x, y2: c.y });
+        if (boxes.length >= 100) break;
+      }
+      const cur = p.cursor ? cam.toScreen(p.cursor.x, p.cursor.y) : null;
+      if (cur && (cur.x < -40 || cur.x > cam.width + 40 || cur.y < -40 || cur.y > cam.height + 40)) continue;
+      if (!boxes.length && !cur) continue;
+      out.push({ sx: cur?.x, sy: cur?.y, name: p.name, color: p.color, boxes });
+    }
+    if (out.length) state.remote = out;
+  }
+
+  /** Cursor and selection updates for the people looking with you. */
+  sendPresence() {
+    const session = this.doc?.live;
+    if (!session || session.status === 'closed') return;
+    const c = this.editor?.cursor;
+    session.presence(c?.inside ? { x: c.fx, y: c.fy } : null, [...this.doc.selection]);
+  }
+
+  /** The live status chip, share button and avatar stack for the active doc. */
+  renderLive() {
+    const doc = this.doc;
+    const session = doc?.live;
+    const chip = this.shell.liveChip;
+    this.shell.shareBtn.hidden = !session;
+    this.peerStack.render(session && doc === this.doc ? [...session.peers.values()] : null);
+    if (!session || this.guest && session.status === 'closed') {
+      chip.hidden = true;
+      return;
+    }
+    chip.hidden = false;
+    const text = session.mode === 'view' ? 'View only' : session.status === 'connecting' ? 'Connecting…' : session.status === 'reconnecting' ? 'Reconnecting…' : session.status === 'saving' ? 'Live · Saving…' : 'Live · Saved';
+    chip.textContent = text;
+    chip.className = `live-chip${session.mode === 'view' ? ' view' : session.status === 'reconnecting' ? ' warn' : ''}`;
+  }
+
+  /** Avatars follow only the active drawing. */
+  renderPeers() {
+    const session = this.doc?.live;
+    this.peerStack.render(session ? [...session.peers.values()] : null);
+  }
+
+  /** Centre the view on where someone's cursor is (avatar clicks). */
+  zoomToPeer(p) {
+    if (!p?.cursor || !this.doc) return;
+    this.camera.cx = p.cursor.x;
+    this.camera.cy = p.cursor.y;
+    this.doc.view = this.camera.state;
+    this.editor.viewChanged();
+    this.focusCanvas();
+  }
+
   // Account -------------------------------------------------------------------------
 
   async initAccount() {
     this.renderAccount();
+    if (this.guest) return;
     if (!(await platform.whenPuter())) return;
     this.signedIn = await platform.isSignedIn();
     if (this.signedIn) await this.onSignedIn();
     this.renderAccount();
   }
 
+  /** Guest boot: a share link opens straight into the shared drawing. */
+  async bootGuest() {
+    const info = (await guestShareInfo()) || {};
+    let name = null;
+    let color = null;
+    if (info.mode !== 'view') {
+      const saved = loadJSON(`cad.guest.name`, '');
+      const picked = await promptDialog('Working together', `You are editing "${info.name || 'a drawing'}" that ${info.ownerName || 'someone'} shared. What should we call you?`, saved || '');
+      if (picked !== null) {
+        name = String(picked).trim().slice(0, 24);
+        try {
+          localStorage.setItem('cad.guest.name', JSON.stringify(name));
+        } catch {
+          /* ignore */
+        }
+      }
+      color = ['#e5484d', '#f76b15', '#e2a336', '#46a758', '#12a594', '#0090ff', '#3e63dd', '#8e4ec6', '#d6409f', '#ab6400'][Math.floor(Math.random() * 10)];
+    }
+    this.openLive(null, info.name || 'Shared drawing', { name, color });
+  }
+
   async onSignedIn() {
     this.user = await platform.getUser();
     this.signedIn = !!this.user;
     this.renderAccount();
+    // The assistant labels the empty model list differently for admins.
+    this.assistant?.loadModels?.();
     if (this.user) {
       const pic = await platform.fetchProfilePicture(this.user.username);
       if (pic) {
@@ -741,15 +1040,20 @@ export class App {
   renderAccount() {
     const el = this.shell.account;
     clear(el);
+    if (this.guest) {
+      // Guests have no account: only the live chip describes their session.
+      el.hidden = true;
+      return;
+    }
     if (!this.signedIn) {
       el.append(
         h(
           'button.btn.sm.signin',
           {
             type: 'button',
-            'aria-label': 'Sign in with Puter',
-            'data-tip': 'Sign in with Puter',
-            'data-tip-desc': 'Save drawings to your Puter drive and sync settings. Drawing works without an account.',
+            'aria-label': 'Sign in to your CAD server',
+            'data-tip': 'Sign in to your CAD server',
+            'data-tip-desc': 'Save drawings to your server drive and sync settings. Drawing works without an account.',
             onClick: () => this.signIn(),
           },
           icon('log-in', 15),
@@ -773,6 +1077,8 @@ export class App {
     const items = [{ header: `Signed in as ${this.user?.username ?? ''}` }];
     if (platform.canSignOut()) items.push({ label: 'Sign out', icon: 'log-out', action: () => this.signOut() });
     else items.push({ label: 'Signed in through Puter', disabled: true });
+    if (this.user?.isAdmin) items.push({ label: 'Admin panel', icon: 'settings', action: () => window.open('/admin/', '_blank', 'noopener') });
+    items.push({ label: 'Account settings', icon: 'user', action: () => window.open('/account/', '_blank', 'noopener') });
     showMenu(anchor, items, { alignRight: true, label: 'Account' });
   }
 
@@ -782,7 +1088,7 @@ export class App {
       this.signedIn = await platform.isSignedIn();
       if (this.signedIn) {
         await this.onSignedIn();
-        toast('Signed in. You can now save drawings to your Puter drive.', { kind: 'success' });
+        toast('Signed in. You can now save drawings to your server drive.', { kind: 'success' });
       }
     } catch (err) {
       // Closing the sign-in window is a choice, not an error.
@@ -810,7 +1116,7 @@ export class App {
 
   async ensureSignedIn(reason) {
     if (this.signedIn) return true;
-    const ok = await confirmDialog('Sign in to continue', `Sign in with Puter to ${reason}. Your drawings stay private to your account.`, { confirm: 'Sign in' });
+    const ok = await confirmDialog('Sign in to continue', `Sign in to your CAD server to ${reason}. Your drawings stay private to your account.`, { confirm: 'Sign in' });
     if (!ok) return false;
     return this.signIn();
   }
@@ -1000,6 +1306,7 @@ export class App {
       { id: 'properties', label: 'Properties', comp: this.properties },
       { id: 'layers', label: 'Layers', comp: this.layers },
       { id: 'blocks', label: 'Blocks', comp: this.blocks },
+      ...(this.assistant ? [{ id: 'assistant', label: 'Assistant', comp: this.assistant }] : []),
     ];
     this.dockOpen = new Set(saved.open || []);
     this.dockActive = saved.active || null;
@@ -1100,6 +1407,14 @@ export class App {
     this.togglePanel('blocks');
   }
 
+  toggleAssistant() {
+    if (!this.assistant) {
+      this.editor.ui.log('The AI assistant is not available through a share link.', 'muted');
+      return;
+    }
+    this.togglePanel('assistant');
+  }
+
   // Phone toolbar ---------------------------------------------------------------------------
 
   renderPhonebar() {
@@ -1145,14 +1460,14 @@ export class App {
     if (!d) return;
     if (this.editor.busy) this.editor.cancelAll();
     const label = d.undo();
-    this.cmdline.log(label ? `Undo ${label}` : 'Nothing to undo', 'muted');
+    this.cmdline.log(label ? `Undo ${label}` : d.lastSkipped ? 'Nothing to undo here: someone else changed it' : 'Nothing to undo', 'muted');
   }
 
   redo() {
     const d = this.doc?.drawing;
     if (!d) return;
     const label = d.redo();
-    this.cmdline.log(label ? `Redo ${label}` : 'Nothing to redo', 'muted');
+    this.cmdline.log(label ? `Redo ${label}` : d.lastSkipped ? 'Nothing to redo here: someone else changed it' : 'Nothing to redo', 'muted');
   }
 
   pushView() {
@@ -1364,6 +1679,7 @@ export class App {
           }
         : null,
       { label: 'Save', icon: 'save', shortcut: `${MOD}+S`, action: () => this.run('SAVE') },
+      this.doc?.live && !this.guest ? { label: 'Version history...', icon: 'history', action: () => dialogs.versionHistoryDialog(this, this.doc) } : null,
       { label: 'Save as...', icon: 'save-all', shortcut: `${MOD}+Shift+S`, action: () => this.run('SAVEAS') },
       { separator: true },
       { label: 'Import DXF...', icon: 'upload', action: () => this.run('IMPORT') },
@@ -1385,9 +1701,9 @@ export class App {
 
   async openRecent(r) {
     if (r.source === 'cloud') {
-      if (!(await this.ensureSignedIn('open files from your Puter drive'))) return;
+      if (this.guest || !(await this.ensureSignedIn('open files from your server drive'))) return;
       try {
-        await this.openBuffer(await storage.cloudRead(r.path), r.name, { source: 'cloud', path: r.path });
+        await this.openServer(r.path, r.name);
       } catch (err) {
         // Forget it only when the file is gone, not on a network hiccup.
         if (storage.isNotFoundError(err)) storage.removeRecent(r.path);

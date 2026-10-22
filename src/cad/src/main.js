@@ -1,3 +1,6 @@
+// Must come first: connects the app to your own CAD server instead of Puter.
+import './local-cloud.js';
+import { guest } from './local-cloud.js';
 import './styles/tokens.css';
 import './styles/base.css';
 import './styles/chrome.css';
@@ -17,7 +20,8 @@ app
   })
   .finally(() => showAlphaNotice());
 
-if ('serviceWorker' in navigator && import.meta.env.PROD) {
+// A share link runs on a URL that keeps changing (the token); guests never install it.
+if ('serviceWorker' in navigator && import.meta.env.PROD && !guest) {
   window.addEventListener('load', () => {
     navigator.serviceWorker
       .register('./sw.js')

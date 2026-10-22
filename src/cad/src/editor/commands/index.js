@@ -44,6 +44,8 @@ const APP_COMMANDS = [
   app('BLOCKS', 'Blocks palette', 'block-insert', 'toggleBlocks', ['BLOCKSPALETTE']),
   app('CLEANSCREEN', 'Clean screen', 'clean-screen', 'toggleCleanScreen', ['CLEANSCREENON']),
   app('GRID', 'Grid display', 'grid', 'toggleSetting', [], { args: 'grid' }),
+  app('SHARE', 'Share', 'share', 'shareDrawing', ['COEDIT']),
+  app('ASSISTANT', 'AI assistant', 'sparkle', 'toggleAssistant', ['AI']),
 ];
 
 /** Build the name/alias -> command map. */

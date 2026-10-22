@@ -1,11 +1,12 @@
 import { defineConfig } from 'vite';
-import puterLocalhost from '../../dev/puter-localhost.mjs';
 
 export default defineConfig({
-  plugins: [puterLocalhost('cad')],
   base: './',
   build: { target: 'es2022', cssTarget: 'safari15' },
   worker: { format: 'es' },
+  // `npm run dev` in this folder talks to a CAD Home server running on port 8080.
+  // ws: true keeps live co-editing working while developing.
+  server: { proxy: { '/api': { target: 'http://localhost:8080', ws: true } } },
   test: {
     environment: 'node',
     include: ['tests/**/*.test.js'],

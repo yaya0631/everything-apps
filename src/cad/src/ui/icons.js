@@ -69,6 +69,7 @@ import {
   Ruler,
   Palette,
   Type,
+  Sparkles,
   Sun as SunIcon,
 } from 'lucide';
 
@@ -135,6 +136,7 @@ const LUCIDE = {
   ruler: Ruler,
   palette: Palette,
   type: Type,
+  sparkle: Sparkles,
 };
 
 // Point marker: a small filled square centred on (x, y).

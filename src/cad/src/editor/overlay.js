@@ -141,11 +141,56 @@ export class Overlay {
       for (const r of s.readouts) this._label(r.sx, r.sy, r.text, r.align || 'center');
     }
 
+    if (s.remote && s.remote.length) this._remote(s.remote);
+
     if (s.snap) this._snapMarker(s.snap);
 
     if (s.cursor && s.cursorStyle !== 'none') this._cursor(s);
 
     if (s.tooltip) this._tooltip(s.tooltip);
+  }
+
+  /**
+   * Other people in a live session: their named cursor arrows and the
+   * outlines around what they selected, drawn in their colour.
+   * remote: [{ sx, sy, name, color, boxes: [{x1, y1, x2, y2}] }]
+   */
+  _remote(peers) {
+    const c = this.ctx;
+    c.font = '11px system-ui, sans-serif';
+    c.textBaseline = 'middle';
+    for (const p of peers) {
+      c.strokeStyle = p.color;
+      c.fillStyle = p.color;
+      c.globalAlpha = 0.35;
+      for (const b of p.boxes || []) {
+        const x1 = Math.min(b.x1, b.x2),
+          y1 = Math.min(b.y1, b.y2),
+          x2 = Math.max(b.x1, b.x2),
+          y2 = Math.max(b.y1, b.y2);
+        c.lineWidth = 2;
+        c.strokeRect(x1 - 3, y1 - 3, x2 - x1 + 6, y2 - y1 + 6);
+      }
+      c.globalAlpha = 1;
+      if (p.sx == null) continue;
+      // A small pointer arrow, slightly off the exact point so it is visible.
+      const x = p.sx,
+        y = p.sy;
+      c.beginPath();
+      c.moveTo(x, y);
+      c.lineTo(x + 2, y + 12);
+      c.lineTo(x + 5.5, y + 8.5);
+      c.lineTo(x + 10, y + 13);
+      c.lineTo(x + 12.5, y + 10.5);
+      c.lineTo(x + 8, y + 6.5);
+      c.lineTo(x + 12, y + 4.5);
+      c.closePath();
+      c.fill();
+      c.lineWidth = 1;
+      c.strokeStyle = 'rgba(0,0,0,0.45)';
+      c.stroke();
+      if (p.name) this._label(x + 14, y + 20, p.name, 'left');
+    }
   }
 
   _cursor(s) {

@@ -5,7 +5,7 @@
  */
 import { h, clear, MOD } from './dom.js';
 import { icon } from './icons.js';
-import { openDialog, toast } from './dialog.js';
+import { openDialog, confirmDialog, promptDialog, toast } from './dialog.js';
 import { PALETTE, colorLabel, colorCss, rgbToHex } from '../core/colors.js';
 import { COLOR_BYLAYER, COLOR_BYBLOCK, UNITS } from '../core/schema.js';
 import { STANDARD_LINETYPES } from '../core/linetypes.js';
@@ -75,25 +75,42 @@ export async function openFileDialog(app) {
   const status = h('p.field-hint');
   let pick = null;
   let closeFn;
+  const heading = h('h3.dlg-sub', 'Your server drive');
   const body = h(
     'div.open-dlg',
     h(
       'div.open-sources',
       h('button.btn.big', { type: 'button', onClick: () => ((pick = { source: 'device' }), closeFn()) }, icon('upload', 20), h('span', h('strong', 'Open from this device'), h('small', 'A .cad or .dxf file on your computer'))),
     ),
-    h('h3.dlg-sub', 'Your Puter drive'),
+    heading,
     status,
     list,
   );
-  const render = async () => {
+
+  const fileButton = (f, { badge = null, path = f.path } = {}) =>
+    h(
+      'button.file-item',
+      { type: 'button', onClick: () => ((pick = { source: 'cloud', path, name: f.name }), closeFn()) },
+      icon(f.name.toLowerCase().endsWith('.dxf') ? 'file-text' : 'file', 18),
+      h('span.file-name', f.name, badge ? h('span.file-badge', badge) : null),
+      h('span.file-meta', f.meta || ''),
+    );
+  const dirButton = (f, meta, onClick) =>
+    h('button.file-item', { type: 'button', onClick }, icon('folder', 18), h('span.file-name', f.name), h('span.file-meta', meta));
+
+  const isDrawing = (name) => /\.(cad|dxf)$/i.test(name);
+
+  const renderOwn = async () => {
     clear(list);
+    heading.textContent = 'Your server drive';
+    status.hidden = false;
     if (!app.signedIn) {
       status.textContent = '';
       list.append(
         h(
           'li.file-empty',
-          h('p', 'Sign in with Puter to open and save drawings in your cloud drive.'),
-          h('button.btn.primary', { type: 'button', onClick: async () => ((await app.signIn()) ? render() : null) }, icon('log-in', 16), 'Sign in'),
+          h('p', 'Sign in to your CAD server to open and save drawings in your drive.'),
+          h('button.btn.primary', { type: 'button', onClick: async () => ((await app.signIn()) ? renderOwn() : null) }, icon('log-in', 16), 'Sign in'),
         ),
       );
       return;
@@ -128,18 +145,7 @@ export async function openFileDialog(app) {
     const appendFiles = (files) => {
       for (const f of files) {
         const when = f.modified ? new Date(f.modified * (f.modified < 1e12 ? 1000 : 1)).toLocaleString() : '';
-        list.append(
-          h(
-            'li',
-            h(
-              'button.file-item',
-              { type: 'button', onClick: () => ((pick = { source: 'cloud', path: f.path, name: f.name }), closeFn()) },
-              icon(f.name.toLowerCase().endsWith('.dxf') ? 'file-text' : 'file', 18),
-              h('span.file-name', f.name),
-              h('span.file-meta', when),
-            ),
-          ),
-        );
+        list.append(h('li', fileButton({ ...f, meta: when })));
       }
     };
     try {
@@ -147,12 +153,354 @@ export async function openFileDialog(app) {
     } catch (err) {
       status.textContent = `Could not list your drive: ${err?.message || err}`;
     }
+    await renderShared();
   };
+
+  const renderShared = async () => {
+    let shared;
+    try {
+      shared = await puter.share.incoming();
+    } catch (err) {
+      // The server ran before this feature, or sharing is down: keep the own list usable.
+      return;
+    }
+    if (!Array.isArray(shared) || !shared.length) return;
+    list.append(h('li.file-head', h('h3.dlg-sub', 'Shared with me')));
+    for (const s of shared) {
+      const badge = s.mode === 'edit' ? 'can edit' : 'view only';
+      const meta = s.ownerName || '';
+      if (s.is_dir) list.append(h('li', dirButton(s, `${meta} · folder`, () => browse(s))));
+      else list.append(h('li', fileButton(s, { badge })));
+    }
+  };
+
+  /** Walk inside a shared folder; its drawings and subfolders list here. */
+  const browse = async (folder) => {
+    clear(list);
+    heading.textContent = `In "${folder.name}" (shared)`;
+    status.textContent = `Loading ${folder.name}...`;
+    list.append(h('li', dirButton({ name: 'Shared with me' }, '', renderOwn)));
+    try {
+      const page = await puter.fs.readdir({ path: folder.path });
+      const items = (Array.isArray(page) ? page : page.items || []).map((f) => (typeof f === 'string' ? { name: f, is_dir: false } : f));
+      status.textContent = items.length ? '' : 'No drawings in this folder yet.';
+      const dirs = items.filter((f) => f.is_dir).sort((a, b) => a.name.localeCompare(b.name));
+      const files = items.filter((f) => !f.is_dir && isDrawing(f.name)).sort((a, b) => a.name.localeCompare(b.name));
+      for (const d of dirs) list.append(h('li', dirButton(d, folder.name, () => browse({ name: d.name, path: `${folder.path}/${d.name}` }))));
+      for (const f of files) {
+        const when = f.modified ? new Date(f.modified * (f.modified < 1e12 ? 1000 : 1)).toLocaleString() : '';
+        list.append(h('li', fileButton({ ...f, meta: when }, { path: `${folder.path}/${f.name}` })));
+      }
+    } catch (err) {
+      status.textContent = `Could not open "${folder.name}": ${err?.message || err}`;
+    }
+  };
+
   const p = openDialog({ title: 'Open drawing', body, size: 'md', actions: [{ label: 'Cancel' }] });
   closeFn = () => document.querySelector('dialog[open]')?._close(null);
-  render();
+  await renderOwn();
   await p;
   return pick;
+}
+
+// Sharing -------------------------------------------------------------------------------
+
+const EXPIRY = [
+  [0, 'Never'],
+  [1, '1 day'],
+  [7, '7 days'],
+  [30, '30 days'],
+];
+
+function timeLabel(ms) {
+  if (!ms) return '';
+  return new Date(ms).toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+/** A .dxf cannot be live-shared: .cad is the format everyone edits together. */
+export function shareAsCad(app, doc) {
+  return openDialog({
+    title: 'Save a copy as a drawing',
+    body: h('p.dialog-text', 'Only drawings in the .cad format can be shared or edited together. Save a copy as .cad, then share it.'),
+    size: 'sm',
+    actions: [{ label: 'Cancel' }, { label: 'Save a copy (.cad)', primary: true, onClick: () => setTimeout(() => app.saveAs(app.doc)) }],
+  });
+}
+
+export async function shareDialog(app, doc) {
+  const path = doc.file?.path;
+  if (!path) return;
+  let info = null;
+  const body = h('div.share-dlg');
+  const tabbar = h(
+    'div.tabbar',
+    { role: 'tablist', 'aria-label': 'Sharing' },
+    h('button', { type: 'button', role: 'tab', className: 'share-tab-on', 'aria-selected': 'true' }, 'People'),
+    h('button', { type: 'button', role: 'tab', 'aria-selected': 'false' }, 'Link'),
+  );
+  const peoplePanel = h('div', { role: 'tabpanel' });
+  const linkPanel = h('div', { role: 'tabpanel', hidden: true });
+  body.append(tabbar, peoplePanel, linkPanel);
+  const showTab = (which) => {
+    peoplePanel.hidden = which !== 'people';
+    linkPanel.hidden = which !== 'link';
+    for (const b of tabbar.querySelectorAll('[role="tab"]')) {
+      const on = (b.textContent === 'People') === (which === 'people');
+      b.className = on ? 'share-tab-on' : '';
+      b.setAttribute('aria-selected', String((b.textContent === 'People') === (which === 'people')));
+    }
+  };
+  tabbar.children[0].addEventListener('click', () => showTab('people'));
+  tabbar.children[1].addEventListener('click', () => showTab('link'));
+
+  const wrap = async (work, what) => {
+    try {
+      return await work();
+    } catch (err) {
+      toast(`${what}: ${err?.message || err}`, { kind: 'error', timeout: 7000 });
+      return null;
+    }
+  };
+
+  const renderPeople = () => {
+    clear(peoplePanel);
+    const row = (p) =>
+      h(
+        'div.share-row',
+        h('span.share-who', p.displayName === p.user ? p.user : `${p.displayName} (${p.user})`),
+        h('span.share-mode', p.mode === 'edit' ? 'Can edit' : 'Can view'),
+        h('span.share-act'),
+      );
+    if (info.people?.length) {
+      peoplePanel.append(h('div.share-row.head', h('span.share-who', 'Person'), h('span.share-mode', 'Access')));
+      for (const p of info.people) {
+        const r = row(p);
+        if (info.canManagePeople) {
+          r.append(
+            h(
+              'button.icon-btn.sm',
+              {
+                type: 'button',
+                'aria-label': `Remove ${p.user}'s access`,
+                'data-tip': 'Remove access',
+                onClick: async () => {
+                  const next = await wrap(() => puter.share.removePeople(path, p.user), 'Could not remove access');
+                  if (next) {
+                    info = next;
+                    renderPeople();
+                  }
+                },
+              },
+              icon('x', 15),
+            ),
+          );
+        }
+        peoplePanel.append(r);
+      }
+    } else {
+      peoplePanel.append(h('p.field-hint', 'Not shared with anyone yet. People you share it with see it in their Open dialog.'));
+    }
+    if (info.canManagePeople) {
+      const picker = h('input.input', { type: 'text', list: 'share-directory', placeholder: 'Type their name...', spellcheck: 'false' });
+      const ds = h('datalist', { id: 'share-directory' });
+      wrap(async () => {
+        const dir = await puter.share.directory();
+        for (const d of dir) ds.append(h('option', { value: d.username }, d.displayName));
+      }, 'Could not list the people on this server');
+      const mode = select(
+        [
+          ['view', 'Can view'],
+          ['edit', 'Can edit'],
+        ],
+        'view',
+      );
+      const add = async () => {
+        const user = picker.value.trim();
+        if (!user) return;
+        const next = await wrap(() => puter.share.people(path, user, mode.value), 'Could not share');
+        if (next) {
+          info = next;
+          renderPeople();
+        }
+      };
+      picker.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') e.preventDefault();
+      });
+      peoplePanel.append(h('div.share-add', picker, ds, mode, h('button.btn', { type: 'button', onClick: add }, 'Share')));
+    } else {
+      peoplePanel.append(h('p.field-hint', 'Only the drawing\u2019s owner can change who has access.'));
+    }
+  };
+
+  const renderLinks = () => {
+    clear(linkPanel);
+    const copy = async (url) => {
+      try {
+        await navigator.clipboard.writeText(url);
+        toast('Link copied', { kind: 'success' });
+      } catch {
+        toast('Copy the link by selecting it', { timeout: 5000 });
+      }
+    };
+    if (info.links?.length) {
+      linkPanel.append(h('div.share-row', h('span.share-who', 'Link'), h('span.share-mode', 'Access'), h('span.share-act', '')));
+      for (const l of info.links) {
+        const emailReq = info.emailConfigured
+          ? h(
+              'button.icon-btn.sm',
+              {
+                type: 'button',
+                'data-tip': 'Email this link',
+                'aria-label': 'Email this link',
+                onClick: async () => {
+                  const to = await promptDialog('Email the link', 'Send this link to (one or more addresses)', '');
+                  if (to === null) return;
+                  if (!(await wrap(() => puter.share.emailLink(l.token, to), 'Could not send the email'))) return;
+                  toast(`Link sent to ${to}`, { kind: 'success' });
+                },
+              },
+              icon('file-text', 15),
+            )
+          : null;
+        linkPanel.append(
+          h(
+            'div.share-row',
+            l.url
+              ? h('a.share-url', { href: l.url, target: '_blank', rel: 'noopener' }, l.url)
+              : h('span.share-url.muted', 'public address not set'),
+            h('span.share-meta', [(l.mode === 'edit' ? 'edit' : 'view'), l.expires ? `expires ${timeLabel(l.expires)}` : 'never expires', l.uses ? `${l.uses} use${l.uses === 1 ? '' : 's'}` : 'unused'].join(' · ')),
+            h(
+              'span.share-act',
+              l.url
+                ? h('button.icon-btn.sm', { type: 'button', 'data-tip': 'Copy link', 'aria-label': 'Copy link', onClick: () => copy(l.url) }, icon('copy', 15))
+                : h('span', ''),
+              emailReq,
+              h(
+                'button.icon-btn.sm',
+                {
+                  type: 'button',
+                  'data-tip': 'Delete link',
+                  'aria-label': `Delete link (created ${timeLabel(l.created)})`,
+                  onClick: async () => {
+                    const ok = await confirmDialog('Delete this link?', 'Anyone with the link will lose access immediately.', { confirm: 'Delete link', danger: true });
+                    if (!ok) return;
+                    const r = await wrap(() => puter.share.removeLink(l.token), 'Could not delete the link');
+                    if (r) await reloadAndRender('links');
+                  },
+                },
+                icon('trash', 15),
+              ),
+            ),
+          ),
+        );
+      }
+    } else if (!info.publicUrl) {
+      linkPanel.append(
+        h(
+          'p.field-hint',
+          'Share links need the public address of this server (Tailscale Funnel). Your server admin can set it in Admin → Server.',
+        ),
+      );
+    } else {
+      linkPanel.append(h('p.field-hint', 'No links yet. Anyone with a link can open this drawing without an account.'));
+    }
+    const mode = select(
+      [
+        ['view', 'Can view'],
+        ['edit', 'Can edit'],
+      ],
+      'view',
+    );
+    const expiry = select(EXPIRY, 0);
+    const create = async () => {
+      const l = await wrap(() => puter.share.createLink(path, mode.value, Number(expiry.value) || 0), 'Could not create the link');
+      if (l) {
+        if (!l.url) toast('The link was created, but the public address is not set. Set it in Admin → Server.', { kind: 'error', timeout: 9000 });
+        await reloadAndRender('links');
+      }
+    };
+    linkPanel.append(h('div.share-add', mode, expiry, h('button.btn', { type: 'button', onClick: create }, 'Create link')));
+  };
+
+  const reloadAndRender = async (tab) => {
+    const next = await wrap(() => puter.share.list(path), 'Could not load sharing information');
+    if (next) info = next;
+    renderPeople();
+    renderLinks();
+    if (tab) showTab(tab);
+  };
+
+  const loaded = await wrap(() => puter.share.list(path), 'Could not load sharing information');
+  if (!loaded) {
+    await openDialog({ title: 'Share', body: h('p.dialog-text', 'Could not load sharing information from the server.'), size: 'sm', actions: [{ label: 'Close' }] });
+    return;
+  }
+  info = loaded;
+  if (info.isCad === false) {
+    await openDialog({ title: 'Share', body: h('p.dialog-text', 'Only .cad drawings can be shared. Save a copy as .cad first.'), size: 'sm', actions: [{ label: 'Close' }] });
+    return;
+  }
+  renderPeople();
+  renderLinks();
+  await openDialog({ title: `Share "${doc.name}"`, body, size: 'md', actions: [{ label: 'Done' }] });
+}
+
+/** Past snapshots of a live drawing: list, restore, or open one as a copy. */
+export async function versionHistoryDialog(app, doc) {
+  const path = doc.file?.path;
+  if (!path) return;
+  const rows = h('ul.file-list', { role: 'list' });
+  const status = h('p.field-hint', 'Loading...');
+  const body = h('div.open-dlg', status, rows);
+  const render = (list) => {
+    clear(rows);
+    if (!list.length) {
+      status.textContent = 'No versions yet. The server snapshots this drawing when someone opens it, every 30 minutes of activity, and before a restore.';
+      return;
+    }
+    status.textContent = 'Snapshots are also taken every 30 minutes while the drawing is edited, and before a restore. The newest 30 are kept.';
+    for (const it of list) {
+      rows.append(
+        h(
+          'li',
+          h(
+            'div.share-row',
+            h('span.share-who', timeLabel(it.created), h('small.file-meta', ` by ${it.byName || 'the server'}${it.reason ? ` · ${it.reason}` : ''}`)),
+            h(
+              'span.share-act',
+              h('button.btn.sm', { type: 'button', onClick: async () => {
+                const ok = await confirmDialog('Restore this version?', `The drawing goes back to ${timeLabel(it.created)}. Everyone editing it also gets the restored version; what changed since is kept as a snapshot.`, { confirm: 'Restore', danger: true });
+                if (!ok) return;
+                try {
+                  await puter.history.restore(path, it.id);
+                  toast('Restored. Everyone reconnects to the restored drawing.', { kind: 'success' });
+                } catch (err) {
+                  toast(`Could not restore: ${err?.message || err}`, { kind: 'error' });
+                }
+              } }, 'Restore'),
+              h('button.btn.sm', { type: 'button', onClick: async () => {
+                try {
+                  const blob = await puter.history.file(path, it.id);
+                  await app.openVersionCopy(blob, doc.name);
+                } catch (err) {
+                  toast(`Could not open the version: ${err?.message || err}`, { kind: 'error' });
+                }
+              } }, 'Open as copy'),
+            ),
+          ),
+        ),
+      );
+    }
+  };
+  const load = async () => {
+    try {
+      render(await puter.history.list(path));
+    } catch (err) {
+      status.textContent = `Could not load the versions: ${err?.message || err}`;
+    }
+  };
+  load();
+  await openDialog({ title: `Version history — ${doc.name}`, body, size: 'md', actions: [{ label: 'Close' }] });
 }
 
 export async function formatChoice(app, doc) {
@@ -162,19 +510,19 @@ export async function formatChoice(app, doc) {
   return r || null;
 }
 
-export async function saveAsDialog(app, doc) {
+export async function saveAsDialog(app, doc, note = null) {
   const name = h('input.input', { type: 'text', value: doc.name, spellcheck: 'false', 'aria-required': 'true' });
   const err = h('p.field-error', { role: 'alert' });
   const where = radios(
     'where',
     [
-      ['cloud', 'Puter drive', app.signedIn ? `Saved in ${storage.CLOUD_DIR} and available anywhere` : 'Requires signing in'],
+      ['cloud', 'Server drive', app.signedIn ? `Saved in ${storage.CLOUD_DIR} on your server, available on every device` : 'Requires signing in'],
       ['device', 'This device', 'Download or save a file on your computer'],
     ],
     doc.file?.source === 'device' || !app.signedIn ? 'device' : 'cloud',
   );
   const fmt = radios('fmt', [['native', `Drawing (${NATIVE_EXT})`, 'Keeps everything exactly'], ['dxf', 'DXF (.dxf)', 'For other CAD programs']], doc.file?.kind || 'native');
-  const body = h('form', { onSubmit: (e) => e.preventDefault() }, field('File name', name), err, h('fieldset.fs', h('legend', 'Location'), where), h('fieldset.fs', h('legend', 'Format'), fmt));
+  const body = h('form', { onSubmit: (e) => e.preventDefault() }, field('File name', name), err, h('fieldset.fs', h('legend', 'Location'), where), h('fieldset.fs', h('legend', 'Format'), fmt), note ? h('p.field-hint', note) : null);
   const r = await openDialog({
     title: 'Save drawing as',
     body,

@@ -201,6 +201,74 @@
   display: none !important;
 }
 
+/* Live co-editing ------------------------------------------------------------ */
+
+.live-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.live-chip::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--success);
+  flex: 0 0 auto;
+}
+
+.live-chip.warn::before {
+  background: var(--warning);
+}
+
+.live-chip.view::before {
+  background: var(--fg-faint);
+}
+
+.tb-peers {
+  display: flex;
+  align-items: center;
+}
+
+.peer-avatars {
+  display: flex;
+  align-items: center;
+}
+
+.peer-avatars > * + * {
+  margin-left: -6px;
+}
+
+.avatar.sm.peer {
+  width: 24px;
+  height: 24px;
+  border: 2px solid var(--bg-app);
+  border-radius: 50%;
+  background: var(--peer-color, var(--accent-strong));
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  position: relative;
+  z-index: 1;
+}
+
+.avatar.sm.peer.more {
+  background: var(--bg-hover, var(--bg-chrome));
+  color: var(--fg-muted);
+  cursor: default;
+}
+
 /* Ribbon -------------------------------------------------------------------- */
 
 .ribbon {

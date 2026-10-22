@@ -1221,6 +1221,7 @@ export class Editor {
       readouts: [],
       ucs: st.showUcs === false ? null : { sx: 28, sy: cam.height - 28 },
     };
+    if (this.remote) this.remote(state, cam);
     if (this.snap) {
       const s = cam.toScreen(this.snap.x, this.snap.y);
       const label = this.snap.tracked ? 'Intersection' : SNAP_LABELS[this.snap.mode];

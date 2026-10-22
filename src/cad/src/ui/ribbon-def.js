@@ -237,6 +237,7 @@ export const RIBBON = [
           { cmd: 'PROPERTIES', size: 'lg' },
           { cmd: 'LAYER', size: 'lg', label: 'Layers' },
           { cmd: 'BLOCKS', size: 'lg', label: 'Blocks' },
+          { cmd: 'ASSISTANT', size: 'lg', label: 'Assistant' },
         ],
       },
       {

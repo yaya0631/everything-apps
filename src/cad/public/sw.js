@@ -5,9 +5,10 @@
  *   page loads        network first, cached copy when offline
  *   /assets/ files    cache first (build file names carry content hashes)
  *   other own files   cached copy right away, refreshed in the background
- *   cross-origin      untouched (Puter's SDK and API)
+ *   /api/ requests    untouched (accounts, drawings and settings on your server)
+ *   cross-origin      untouched
  */
-const CACHE = 'cad-shell-v1';
+const CACHE = 'cad-home-shell-v1';
 const SHELL = ['./', './index.html', './manifest.json', './favicon.ico', './icons/icon-192.png'];
 
 self.addEventListener('install', (event) => {
@@ -83,6 +84,8 @@ self.addEventListener('fetch', (event) => {
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
+  // Server data must always be live and per account, never a cached copy.
+  if (url.pathname.startsWith(new URL('./api/', self.registration.scope).pathname)) return;
 
   if (req.mode === 'navigate') {
     event.respondWith(
