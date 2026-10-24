@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 
 const root = path.resolve(import.meta.dirname, '..');
+const textHash = file => createHash('sha256').update(fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n')).digest('hex');
 execFileSync(process.execPath, [path.join(root, 'tools/generate-opentype-vendor.mjs'), '--check'], { stdio: 'inherit' });
 const lock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
 // Explicitly reviewed SPDX expressions. Unknown/missing declarations fail closed.
@@ -103,6 +104,11 @@ for (const [file, hash] of [['en-US.aff', '8ae1f19d4840d957728ad90555d5a8dff6cc5
 // The thesaurus is generated from the WordNet 3.1 database (tools/generate-thesaurus.mjs); its license must travel with it.
 const wordnetLicense = fs.readFileSync(path.join(root, 'public/thesaurus/LICENSE-WordNet.txt'), 'utf8');
 if (!wordnetLicense.includes('WordNet Release 3.1') || !wordnetLicense.includes('WordNet 3.1 Copyright 2011 by Princeton University.  All rights reserved.') || !wordnetLicense.includes('Permission to use, copy, modify and distribute this software and')) failures.push('Missing WordNet license for public/thesaurus');
-for (const [file, hash] of [['en.json', '583c157505cd770d1cfe777ea577548c0516ba46fc3ea5de11819c939532af8b'], ['LICENSE-WordNet.txt', '71064f86c6330cd471e3f00c780ca0c4104467125c52655353a244598b0d067f']]) if (createHash('sha256').update(fs.readFileSync(path.join(root, 'public/thesaurus', file))).digest('hex') !== hash) failures.push(`public/thesaurus/${file} differs from its reviewed provenance; regenerate with tools/generate-thesaurus.mjs and review before updating this hash`);
+for (const [file, hash] of [['en.json', '583c157505cd770d1cfe777ea577548c0516ba46fc3ea5de11819c939532af8b'], ['LICENSE-WordNet.txt', '71064f86c6330cd471e3f00c780ca0c4104467125c52655353a244598b0d067f']]) {
+  const actual = file.endsWith('.txt')
+    ? textHash(path.join(root, 'public/thesaurus', file))
+    : createHash('sha256').update(fs.readFileSync(path.join(root, 'public/thesaurus', file))).digest('hex');
+  if (actual !== hash) failures.push(`public/thesaurus/${file} differs from its reviewed provenance; regenerate with tools/generate-thesaurus.mjs and review before updating this hash`);
+}
 if (failures.length) { console.error(failures.join('\n')); process.exit(1); }
 console.log(`License policy passed: ${count} locked packages; Noto Sans, Bebas Neue, Oswald, Open Sans, Source Sans Pro, Selawik, Karla and Montserrat under OFL-1.1; en_US dictionary (SCOWL) and WordNet thesaurus notices verified. All package licenses explicitly approved; no AGPL declarations.`);
