@@ -32,7 +32,7 @@ import { createAgent, suggestions, userText, APPROVAL_MODES, DEFAULT_APPROVAL } 
 import { describeCall, changesProject, projectSnapshot } from '../media/ai-tools.js';
 import { VIDEO_MODELS, DEFAULT_VIDEO_MODEL, modelSummary } from '../media/ai-video.js';
 import { IMAGE_MODELS, DEFAULT_IMAGE_MODEL, imageModel } from '../media/imagegen.js';
-import { aiChatStream, friendlyAiError, tooLongForAi } from '../media/ai-chat.js';
+import { aiChatStream, aiModels, friendlyAiError, tooLongForAi } from '../media/ai-chat.js';
 import { attachmentProblem, attachmentKind, attachmentsTooLarge, formatSize, ATTACH_ACCEPT, MAX_ATTACHMENTS } from '../media/ai-attach.js';
 import { readAttachment } from './ai-attachments.js';
 import { renderMarkdown } from './ai-markdown.js';
@@ -64,6 +64,8 @@ export function loadAiSettings() {
   const s = raw && typeof raw === 'object' ? raw : {};
   return {
     approval: APPROVAL_MODES.some((m) => m.id === s.approval) ? s.approval : DEFAULT_APPROVAL,
+    // Empty until the server's model list arrives; the agent then uses its default.
+    model: typeof s.model === 'string' ? s.model : '',
     videoModel: VIDEO_MODELS.some((m) => m.id === s.videoModel) ? s.videoModel : DEFAULT_VIDEO_MODEL,
     imageModel: IMAGE_MODELS.some((m) => m.id === s.imageModel) ? s.imageModel : DEFAULT_IMAGE_MODEL,
     width: Number.isFinite(s.width) ? Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, s.width)) : DEFAULT_WIDTH,
@@ -96,6 +98,16 @@ export function createAiPanel(ctx, { chat = null, services = {}, readFile = read
   const settings = loadAiSettings();
   let isOpen = false;
   let destroyed = false;
+  // The models Admin → AI turned on; the settings menu offers them when they arrive.
+  let chatModels = [];
+  void aiModels().then((list) => {
+    chatModels = list.filter((m) => m.id && m.tools !== false);
+    if (!chatModels.length) return;
+    if (!chatModels.some((m) => m.id === settings.model)) {
+      settings.model = chatModels[0].id;
+      saveAiSettings(settings);
+    }
+  });
 
   // Development builds take a stand-in chat from globalThis.__vsAiChat for browser checks.
   const devChat = () => (import.meta.env?.DEV && typeof globalThis.__vsAiChat === 'function' ? globalThis.__vsAiChat : null);
@@ -210,6 +222,11 @@ export function createAiPanel(ctx, { chat = null, services = {}, readFile = read
       { heading: 'Changes to the project' },
       ...APPROVAL_MODES.map((m) => ({ label: m.label, radio: true, checked: settings.approval === m.id, onSelect: () => { settings.approval = m.id; saveAiSettings(settings); } })),
       'separator',
+      ...(chatModels.length ? [
+        { heading: 'Chat model' },
+        ...chatModels.map((m) => ({ label: m.label || m.id, radio: true, checked: settings.model === m.id, onSelect: () => { settings.model = m.id; saveAiSettings(settings); announce(`Chat model: ${m.label || m.id}`); } })),
+        'separator',
+      ] : []),
       { heading: 'Video model' },
       ...VIDEO_MODELS.map((m) => ({ label: m.label, hint: m.hint, radio: true, checked: settings.videoModel === m.id, onSelect: () => { settings.videoModel = m.id; saveAiSettings(settings); announce(`Video model: ${m.label}`); } })),
       'separator',

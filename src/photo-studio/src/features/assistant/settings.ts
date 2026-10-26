@@ -12,7 +12,8 @@ const KEY = 'photo-studio-assistant';
 export const assistantSettings = { model: DEFAULT_ASSISTANT_MODEL, seeImage: true };
 try {
   const v = JSON.parse(globalThis.localStorage?.getItem(KEY) ?? '{}') as Partial<typeof assistantSettings>;
-  if (typeof v.model === 'string' && ASSISTANT_MODELS.some((m) => m.id === v.model)) assistantSettings.model = v.model;
+  // Keep any remembered id: it may be a server model that is not in the fallback list.
+  if (typeof v.model === 'string' && v.model.trim()) assistantSettings.model = v.model;
   if (typeof v.seeImage === 'boolean') assistantSettings.seeImage = v.seeImage;
 } catch {
   /* Settings are optional. */

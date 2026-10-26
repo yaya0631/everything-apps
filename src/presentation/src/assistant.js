@@ -287,7 +287,7 @@ export function createAgent({
         let text = "";
         const calls = [];
         const iterable = chat(requestMessages(transcript), {
-          model: AI_MODEL,
+          model: settings().model || AI_MODEL,
           tools: TOOLS,
         });
         const iter = iterable[Symbol.asyncIterator]();

@@ -16,6 +16,7 @@ export interface PuterFSItem {
 export interface PuterSDK {
   env?: string;
   appID?: string;
+  ai?: { chat?: (...args: unknown[]) => Promise<unknown>; models?: () => Promise<unknown> };
   auth: {
     isSignedIn(): boolean;
     signIn(opts?: Record<string, unknown>): Promise<unknown>;
@@ -69,6 +70,27 @@ export async function loadPuter(timeoutMs = 5000): Promise<PuterSDK | null> {
 export const puter = () => sdk;
 export function setPuterForTests(p: PuterSDK | null) {
   sdk = p;
+}
+
+/** A model Admin → AI turned on. */
+export interface AiModel {
+  id: string;
+  label?: string;
+  tools?: boolean;
+}
+
+/** The person's models from this server; empty in the Puter desktop, which has no such list. */
+export async function listAiModels(): Promise<AiModel[]> {
+  const p = sdk ?? (await loadPuter());
+  const ask = p?.ai?.models;
+  if (typeof ask !== 'function') return [];
+  try {
+    const list = await ask.call(p?.ai);
+    if (!Array.isArray(list)) return [];
+    return list.filter((m): m is AiModel => !!m && typeof m === 'object' && typeof (m as { id?: unknown }).id === 'string');
+  } catch {
+    return [];
+  }
 }
 
 /** 'app' inside the Puter desktop, 'web' on a normal website, 'none' without the SDK. */

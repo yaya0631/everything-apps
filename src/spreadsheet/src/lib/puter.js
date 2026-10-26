@@ -601,6 +601,22 @@ export function hasAI() {
   return !!window.puter?.ai?.chat;
 }
 
+/**
+ * The models Admin → AI turned on, as the server lists them ({ id, label, provider, tools }).
+ * Empty when the host has no model list (Puter desktop) or the request fails; the caller then
+ * keeps its default.
+ */
+export async function aiModels() {
+  const p = window.puter;
+  if (!p?.ai?.models) return [];
+  try {
+    const list = await p.ai.models();
+    return Array.isArray(list) ? list.filter((m) => m && typeof m.id === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
 /** How much a web address may serve to a formula or a picture: plenty for any sheet the cell budgets allow, not enough to fill memory. */
 export const MAX_FETCH_BYTES = 20 * 1024 * 1024;
 const tooLarge = (url) => Object.assign(new Error(`The response from ${url} is too large (over ${MAX_FETCH_BYTES / (1024 * 1024)} MB)`), { code: 'too-large' });

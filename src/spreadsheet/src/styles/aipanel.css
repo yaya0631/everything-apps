@@ -89,6 +89,17 @@
 .ai-head .icon-btn { width: 28px; height: 28px; }
 .ai-head-mark { display: inline-flex; color: var(--accent-strong); margin-right: 6px; }
 .ai-title { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; margin: 0; }
+.ai-model {
+  max-width: 150px;
+  height: 26px;
+  margin: 0 2px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+}
 .ai-close > span { display: inline-flex; }
 .ai-close > .ai-close-down { display: none; }
 

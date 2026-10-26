@@ -6,7 +6,7 @@ import './assistant.css';
 import type { Editor } from '../../editor';
 import { contributeMenu, registerCommand, registerPanel } from '../../app/registry';
 import { lazy, lazyPanel } from '../../app/lazy';
-import { ASSISTANT_MODELS, assistantSettings, saveAssistantSettings } from './settings';
+import { assistantSettings, saveAssistantSettings } from './settings';
 
 const panel = lazy(() => import('./panel'));
 const controller = lazy(() => import('./controller'));
@@ -32,7 +32,7 @@ export function installAssistant(e: Editor) {
         title: 'Assistant',
         icon: 'assistant',
         location: 'strip',
-        menu: () => ['assistant.ask', 'assistant.clear', '-', { label: 'Model', id: 'assistant.models', items: ASSISTANT_MODELS.map((m) => `assistant.model-${m.id}`) }, 'assistant.see-image'],
+        menu: () => ['assistant.ask', 'assistant.clear', '-', 'assistant.see-image'],
       },
       lazy(async () => {
         const m = await panel();
@@ -69,19 +69,6 @@ export function installAssistant(e: Editor) {
         ed.dock?.update();
       },
     },
-    ...ASSISTANT_MODELS.map((m) => ({
-      id: `assistant.model-${m.id}`,
-      label: `${m.label} (${m.note})`,
-      recordable: false,
-      description: `Use ${m.label} for the Assistant`,
-      checked: () => assistantSettings.model === m.id,
-      run: (ed: Editor) => {
-        assistantSettings.model = m.id;
-        saveAssistantSettings();
-        ed.dock?.update();
-        ed.message(`The Assistant now uses ${m.label}.`);
-      },
-    })),
   );
   // Listed directly in the Window menu (next to Scripts) rather than in Window → Panels.
   for (const [id, title] of [['assistant', 'Assistant'], ['generations', 'Generation History']])

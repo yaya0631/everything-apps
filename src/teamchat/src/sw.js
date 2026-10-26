@@ -53,6 +53,10 @@ self.addEventListener('fetch', (event) => {
     })());
     return;
   }
+  // Hub API responses are session-bound. Caching an unauthenticated 401
+  // during first-run makes the later local shim calls fail even after the
+  // platform session cookie is present.
+  if (url.origin === self.location.origin && url.pathname.startsWith('/api/')) return;
   if (url.origin === self.location.origin) {
     event.respondWith((async () => {
       const hit = await caches.match(req);

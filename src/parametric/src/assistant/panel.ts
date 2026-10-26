@@ -5,7 +5,7 @@
 import type { App } from '../app/app';
 import { appHost } from '../app/assistant-host';
 import { type ChatFn, puterChat } from '../platform/ai';
-import { cloudAvailable, env, puter, signIn } from '../platform/puter';
+import { cloudAvailable, env, listAiModels, puter, signIn } from '../platform/puter';
 import { h } from '../ui/dom';
 import { icon } from '../ui/icons';
 import { toast } from '../ui/overlay';
@@ -17,12 +17,7 @@ import { readAttachment } from './attachments';
 import { SYSTEM_PROMPT, partSnapshot } from './prompt';
 import { runTool, toolSpecs } from './tools';
 
-export const ASSISTANT_MODELS: { id: string; label: string }[] = [
-  { id: 'claude-fable-5-1', label: 'Claude Fable 5.1 (most capable)' },
-  { id: 'claude-opus-5-5', label: 'Claude Opus 5.5' },
-  { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5 (faster)' },
-  { id: 'claude-haiku-5-5', label: 'Claude Haiku 5.5 (fastest)' },
-];
+const DEFAULT_MODEL = 'claude-opus-5-5';
 const SETTINGS_KEY = 'parametric:assistant';
 
 /** Development builds and browser tests may stand in for Puter AI with window.__assistantChat. */
@@ -31,9 +26,10 @@ const devChat = (): ChatFn | null => (import.meta.env.DEV ? (window as unknown a
 function loadModel(): string {
   try {
     const v = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '{}') as { model?: string };
-    if (v.model && ASSISTANT_MODELS.some((m) => m.id === v.model)) return v.model;
+    // Keep any remembered id: it may be a server model that is not in the fallback list.
+    if (typeof v.model === 'string' && v.model.trim()) return v.model;
   } catch { /* settings are optional */ }
-  return ASSISTANT_MODELS[0].id;
+  return DEFAULT_MODEL;
 }
 
 function saveModel(model: string) {
@@ -154,9 +150,11 @@ export class AssistantPanel {
       model: () => this.model,
     });
 
-    const modelSel = h('select', { class: 'input as-model', 'aria-label': 'AI model' }) as HTMLSelectElement;
-    for (const m of ASSISTANT_MODELS) modelSel.append(h('option', { value: m.id, selected: m.id === this.model }, m.label));
+    const modelSel = h('select', { class: 'input as-model', 'aria-label': 'AI model', hidden: true }) as HTMLSelectElement;
     modelSel.addEventListener('change', () => { this.model = modelSel.value; saveModel(this.model); });
+    // The server's models, not a fixed list: Admin → AI decides what people can pick.
+    // The picker stays hidden until that list arrives, so no placeholder names appear.
+    void this.loadModels(modelSel);
     const newChat = h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'New chat', title: 'New chat' }, icon('newChat', 16));
     newChat.addEventListener('click', () => this.reset());
 
@@ -197,6 +195,20 @@ export class AssistantPanel {
     this.bindDrop();
     this.renderEmpty();
     app.store.on((reason) => { if (reason === 'load' && !this.agent.busy && !this.agent.messages.length) this.renderEmpty(); });
+  }
+
+  /** Swap the fallback list for the models this server has turned on. */
+  private async loadModels(sel: HTMLSelectElement) {
+    const models = (await listAiModels()).filter((m) => m.tools !== false);
+    if (!models.length) return;
+    const current = this.model;
+    sel.replaceChildren(...models.map((m) => h('option', { value: m.id, selected: m.id === current }, m.label || m.id)));
+    if (!models.some((m) => m.id === current)) {
+      this.model = models[0].id;
+      saveModel(this.model);
+      sel.value = this.model;
+    }
+    sel.hidden = false;
   }
 
   focus() {

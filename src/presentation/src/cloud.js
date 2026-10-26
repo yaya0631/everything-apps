@@ -275,6 +275,18 @@ export class SaveQueue {
 // Puter's AI answers the assistant. It is there wherever the SDK loaded; the
 // SDK asks for a sign-in itself on the first request made without one.
 export const canAI = () => !!globalThis.puter?.ai?.chat;
+/** The models Admin → AI turned on ({ id, label, tools }); empty where the host has no list. */
+export async function aiModels() {
+  const ai = globalThis.puter?.ai;
+  const ask = ai?.models;
+  if (typeof ask !== "function") return [];
+  try {
+    const list = await ask.call(ai);
+    return Array.isArray(list) ? list.filter((m) => m && typeof m.id === "string") : [];
+  } catch {
+    return [];
+  }
+}
 // One reply from Puter's AI to a conversation, as it arrives: yields
 // { type: "text", text } and { type: "tool", id, name, input } for each
 // function the model calls. `messages` take the OpenAI shape Puter accepts

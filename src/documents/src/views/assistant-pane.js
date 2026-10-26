@@ -13,19 +13,35 @@ import { el, isComposing, MOD_KEY, shortcutCode } from '../ui/dom.js';
 import { toast } from '../ui/toast.js';
 import * as P from '../lib/puter.js';
 import { aiActionById, askAi, answerParagraphs } from '../lib/ai.js';
-import { assistantPrompt, readReply, assistantError, SUGGESTIONS, MAX_ASSISTANT_CHARS } from '../lib/assistant.js';
+import { assistantPrompt, readReply, assistantError, runAssistant, DOC_TOOLS, SUGGESTIONS, MAX_ASSISTANT_CHARS } from '../lib/assistant.js';
 import { sidePane, hint } from './review-ui.js';
 import { commandIconEl } from '../ui/ribbon.js';
 
 const words = text => (String(text).trim().match(/\S+/gu) || []).length;
 const plural = (n, one, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
 
-export function createAssistantPane({ editor, pkg, error, available = () => P.canUseAi(), chat = prompt => P.aiChat(prompt) }) {
+export function createAssistantPane({ editor, pkg, error, available = () => P.canUseAi(), chat = (messages, options) => P.aiChat(messages, options) }) {
   let scope = 'selection', history = [], busy = false, stopped = null;
   const pane = sidePane({ title: 'Assistant', label: 'Assistant pane', className: 'as-pane', onOpen: () => { renderContext(); renderEmpty(); fab.setAttribute('aria-expanded', 'true'); titleButton.setAttribute('aria-pressed', 'true'); }, onClose: () => { fab.setAttribute('aria-expanded', 'false'); titleButton.setAttribute('aria-pressed', 'false'); editor()?.focus(); } });
   pane.heading.prepend(el('span.as-mark', { 'aria-hidden': 'true' }, commandIconEl('assistant', 16)));
+  // The models Admin → AI turned on. Hidden until they arrive, or on a host without a list.
+  let model = '';
+  try { model = localStorage.getItem('documents:assistant:model') || ''; } catch { /* storage blocked */ }
+  const modelSel = el('select.as-model', { 'aria-label': 'AI model', title: 'AI model', hidden: true });
+  modelSel.addEventListener('change', () => {
+    model = modelSel.value;
+    try { localStorage.setItem('documents:assistant:model', model); } catch { /* storage blocked */ }
+  });
+  P.aiModels().then((list) => {
+    const models = list.filter((m) => m.id && m.tools !== false);
+    if (!models.length) return;
+    if (!models.some((m) => m.id === model)) model = models[0].id;
+    modelSel.replaceChildren(...models.map((m) => el('option', { value: m.id }, m.label || m.id)));
+    modelSel.value = model;
+    modelSel.hidden = false;
+  }).catch(() => { /* keep the default model */ });
   const newChat = el('button.btn.btn-ghost.btn-sm.as-new', { type: 'button', onclick: () => { history = []; log.replaceChildren(); renderEmpty(); input.focus(); } }, 'New chat');
-  pane.heading.after(newChat);
+  pane.heading.after(modelSel, newChat);
 
   const log = el('div.as-log', { role: 'log', 'aria-label': 'Conversation with the assistant', tabIndex: -1 });
   const empty = el('div.as-empty');
@@ -100,7 +116,24 @@ export function createAssistantPane({ editor, pkg, error, available = () => P.ca
     if (p.text.length > MAX_ASSISTANT_CHARS) { toast('That is more text than the assistant takes at once. Select a shorter passage.', { icon: 'alert' }); return; }
     input.value = '';
     message('me', el('p', {}, request), el('p.as-sent', {}, scope === 'selection' ? `With ${plural(words(p.text), 'selected word')}` : 'With the whole document'));
-    await reply(() => chat(assistantPrompt({ request, text: p.text, scope: p.scope, history })).then(readReply), p, request);
+    await reply(async () => {
+      const prompt = assistantPrompt({ request, text: p.text, scope: p.scope, history, tools: true });
+      const result = await runAssistant({
+        chat, prompt, model, tools: DOC_TOOLS, maxTokens: 4096,
+        runTool: (name, args) => runDocTool(name, args, p),
+      });
+      // A reply that used a tool already changed the document: show what it
+      // says, not a second copy of the text waiting to be inserted.
+      if (result.usedTools) {
+        let said = 'Done.';
+        try {
+          const parsed = readReply({ message: { content: result.text } });
+          said = parsed.text.trim() || said;
+        } catch { /* the tool did the work and the model sent no closing sentence */ }
+        return { kind: 'answer', text: said, paragraphs: answerParagraphs(said), applied: result.applied };
+      }
+      return readReply({ message: { content: result.text } });
+    }, p, request);
   }
 
   /** One of the writing assistant's actions on the selection (Improve, Shorten, …). */
@@ -108,7 +141,7 @@ export function createAssistantPane({ editor, pkg, error, available = () => P.ca
     const action = aiActionById(id); const p = payload();
     if (!action || !p || busy) return;
     message('me', el('p', {}, label), el('p.as-sent', {}, scope === 'selection' ? `With ${plural(words(p.text), 'selected word')}` : 'With the whole document'));
-    await reply(async () => { const text = await askAi(action, p.text, { chat }); return { kind: 'text', text, paragraphs: answerParagraphs(text), mode: action.mode }; }, p, label);
+    await reply(async () => { const text = await askAi(action, p.text, { chat, chatOptions: model ? { model } : {} }); return { kind: 'text', text, paragraphs: answerParagraphs(text), mode: action.mode }; }, p, label);
   }
 
   async function reply(ask, p, request) {
@@ -129,10 +162,20 @@ export function createAssistantPane({ editor, pkg, error, available = () => P.ca
 
   function answerView(answer, p) {
     const body = el('div.as-answer', {}, ...answer.paragraphs.map(t => el('p', {}, t)));
+    if (answer.applied?.length) return [body, appliedRow()];
     if (answer.kind !== 'text') return [body, actions(answer, p, false)];
     const replacing = p.scope === 'selection' && answer.mode !== 'append';
     const original = replacing ? el('p.as-replaces', {}, `Replaces “${p.text.length > 140 ? `${p.text.slice(0, 140).trim()}…` : p.text}”`) : null;
     return [el('p.as-kind', {}, replacing ? 'Suggested replacement' : 'Suggested text'), body, original, actions(answer, p, true)];
+  }
+
+  /** What a tool did, with the one Undo that takes that change back. */
+  function appliedRow() {
+    const row = el('div.as-actions');
+    const note = el('span.as-applied', { role: 'status' }, 'Changed the document');
+    const undo = el('button.btn.btn-ghost.btn-sm', { type: 'button', onclick: () => { editor()?.undo(); undo.disabled = true; note.textContent = 'Undone'; renderContext(); } }, 'Undo');
+    row.append(note, undo);
+    return row;
   }
 
   function actions(answer, p, insertable) {
@@ -173,9 +216,44 @@ export function createAssistantPane({ editor, pkg, error, available = () => P.ca
     if (!ok) return;
     engine.focus();
     button.disabled = true;
-    const undo = el('button.btn.btn-ghost.btn-sm', { type: 'button', onclick: () => { editor()?.undo(); undo.disabled = true; applied.textContent = 'Undone'; } }, 'Undo');
+    const undo = el('button.btn.btn-ghost.btn-sm', { type: 'button', onclick: () => { editor()?.undo(); undo.disabled = true; applied.textContent = 'Undone'; renderContext(); } }, 'Undo');
     const applied = el('span.as-applied', { role: 'status' }, how === 'replace' ? 'Replaced' : 'Inserted');
     row.replaceChildren(applied, undo);
+    renderContext();
+  }
+
+  /**
+   * The assistant's edit_document tool. Every check happens before the
+   * transaction, so a stale selection or a read-only package changes nothing.
+   */
+  function runDocTool(name, args, p) {
+    if (name !== 'edit_document') return { content: `Error: there is no tool called ${name}.` };
+    const text = String(args?.text ?? '');
+    const mode = String(args?.mode || '');
+    if (!text.trim()) return { content: 'Error: no text was given, so nothing was changed.' };
+    const engine = editor();
+    if (!engine) return { content: 'Error: the document is not open.' };
+    if (pkg()?.readOnly || engine.readOnly || engine.viewOnly) return { content: 'Error: the document is read-only, so nothing was changed.' };
+    if (mode === 'replace_selection') {
+      if (p.scope !== 'selection' || p.start === undefined) return { content: 'Error: there is no selection to replace. Nothing was changed.' };
+      if (engine.model.text.slice(p.start, p.end) !== p.text) return { content: 'Error: the selected text changed since the message was sent. Nothing was changed.' };
+    }
+    if (mode === 'replace_document' && p.scope !== 'document') return { content: 'Error: the whole document was not sent, so it was not replaced.' };
+    if (!['replace_selection', 'insert', 'append', 'replace_document'].includes(mode)) return { content: `Error: ${mode || 'no mode'} is not a way to edit the document.` };
+    engine.finishComposition();
+    if (engine.session.path !== null) engine.editStory(null);
+    const ok = engine.execute(() => {
+      const m = engine.model;
+      if (mode === 'replace_selection') { m.select(p.start, p.end); return m.replace(text); }
+      if (mode === 'insert') { const at = p.scope === 'selection' && p.end !== undefined ? p.end : m.range[0]; m.select(at, at); return m.replace(text); }
+      if (mode === 'append') { const at = m.text.length; const lead = at && !m.text.endsWith('\n') ? '\n' : ''; m.select(at, at); return m.replace(lead + text); }
+      m.select(0, m.text.length);
+      return m.replace(text);
+    });
+    if (!ok) return { content: 'Error: the change could not be made. Nothing was changed.' };
+    engine.focus();
+    renderContext();
+    return { content: `Changed the document (${mode.replace(/_/g, ' ')}).`, applied: { mode } };
   }
 
   function toggle() { if (!available()) return; pane.toggle(); if (pane.isOpen) queueMicrotask(() => input.focus()); }

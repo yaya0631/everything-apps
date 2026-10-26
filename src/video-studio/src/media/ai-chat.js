@@ -7,6 +7,18 @@
  * is yielded in the same pieces. A failure throws an Error whose message is
  * the service's own, as far as it gives one.
  */
+/** The models Admin → AI turned on ({ id, label, tools }); empty where the host has no list. */
+export async function aiModels(sdk = globalThis.puter) {
+  const ask = sdk?.ai?.models;
+  if (typeof ask !== 'function') return [];
+  try {
+    const list = await ask.call(sdk.ai);
+    return Array.isArray(list) ? list.filter((m) => m && typeof m.id === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
 export async function* aiChatStream(messages, { model, tools, maxTokens } = {}, sdk = globalThis.puter) {
   if (!sdk?.ai?.chat) throw new Error('AI is not available here');
   const options = { stream: true, ...(model ? { model } : {}), ...(tools?.length ? { tools } : {}), ...(maxTokens ? { max_tokens: maxTokens } : {}) };

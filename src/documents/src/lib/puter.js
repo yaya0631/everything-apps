@@ -342,6 +342,18 @@ export function aiChat(prompt, options = {}) {
   return sdk().ai.chat(prompt, options);
 }
 
+/** The models Admin → AI turned on ({ id, label, tools }); empty on hosts without a list. */
+export async function aiModels() {
+  const ask = sdk()?.ai?.models;
+  if (typeof ask !== 'function') return [];
+  try {
+    const list = await ask.call(sdk().ai);
+    return Array.isArray(list) ? list.filter((m) => m && typeof m.id === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
 /** Whether Puter can make pictures from text (puter.ai.txt2img). */
 export function canMakeImages() {
   return typeof sdk()?.ai?.txt2img === 'function';

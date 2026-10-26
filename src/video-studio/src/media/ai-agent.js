@@ -232,7 +232,7 @@ export function createAgent({ chat, runTool, describe, approve, snapshot = () =>
         let text = '';
         let cut = false;
         const calls = [];
-        const iterable = chat(requestMessages(transcript), { model: AI_MODEL, tools: toolSpecs(), maxTokens: MAX_OUTPUT_TOKENS });
+        const iterable = chat(requestMessages(transcript), { model: settings().model || AI_MODEL, tools: toolSpecs(), maxTokens: MAX_OUTPUT_TOKENS });
         const iter = iterable[Symbol.asyncIterator]();
         for (;;) {
           const next = await Promise.race([iter.next(), stopSignal]);

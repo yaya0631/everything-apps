@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { assistantPrompt, readReply, assistantError } from '../src/lib/assistant.js';
+import { assistantPrompt, readReply, assistantError, runAssistant, DOC_TOOLS } from '../src/lib/assistant.js';
 import { sendMail, canEmail, EMAIL } from '../src/lib/mail-send.js';
 import { saveVersion, listVersions, readVersionMeta, writeVersionMeta, metaPath, MAX_VERSIONS } from '../src/lib/versions.js';
 
@@ -25,6 +25,42 @@ describe('assistant prompts and replies', () => {
   it('explains failures in plain words', () => {
     expect(assistantError(new Error('insufficient funds'))).toMatch(/allowance/);
     expect(assistantError(new Error('Failed to fetch'))).toMatch(/connection/);
+  });
+  it('offers the edit tool and runs it before the final answer', async () => {
+    const calls = [];
+    const chat = async (messages, options) => {
+      calls.push({ messages, options });
+      if (messages.some((m) => m.role === 'tool')) return { message: { content: 'ANSWER: Shortened the introduction.' } };
+      return { message: { content: '', tool_calls: [{ id: 'c1', function: { name: 'edit_document', arguments: JSON.stringify({ text: 'Hi.', mode: 'replace_selection' }) } }] } };
+    };
+    const result = await runAssistant({
+      chat, prompt: 'Shorten the introduction', model: 'openrouter:test',
+      runTool: (name, args) => { expect(name).toBe('edit_document'); return { content: 'Changed the document.', applied: { mode: args.mode } }; },
+    });
+    expect(calls[0].options).toMatchObject({ model: 'openrouter:test', max_tokens: 4096, tools: DOC_TOOLS });
+    expect(calls[1].messages.at(-1)).toMatchObject({ role: 'tool', tool_call_id: 'c1', content: 'Changed the document.' });
+    expect(result.usedTools).toBe(true);
+    expect(result.applied).toEqual([{ mode: 'replace_selection' }]);
+    expect(result.text).toBe('ANSWER: Shortened the introduction.');
+  });
+  it('keeps the applied change when the tool-only turn has no closing sentence', async () => {
+    let round = 0;
+    const chat = async () => {
+      round++;
+      if (round === 1) return { message: { content: '', tool_calls: [{ id: 'c1', function: { name: 'edit_document', arguments: JSON.stringify({ text: 'Hi.', mode: 'replace_document' }) } }] } };
+      return { message: { content: '' } };
+    };
+    const result = await runAssistant({
+      chat, prompt: 'Insert a greeting', model: 'openrouter:test',
+      runTool: () => ({ content: 'Changed the document.', applied: { mode: 'replace_document' } }),
+    });
+    expect(result.usedTools).toBe(true);
+    expect(result.text).toBe('');
+    expect(result.applied).toEqual([{ mode: 'replace_document' }]);
+  });
+  it('prompts for the tool only in the editing mode', () => {
+    expect(assistantPrompt({ request: 'x', text: 'y', scope: 'selection', tools: true })).toContain('call the edit_document tool');
+    expect(assistantPrompt({ request: 'x', text: 'y', scope: 'selection' })).toContain('reply with the line "TEXT:"');
   });
 });
 

@@ -47,6 +47,8 @@ export function loadAiSettings() {
   const s = raw && typeof raw === 'object' ? raw : {};
   return {
     approval: APPROVAL_MODES.some((m) => m.id === s.approval) ? s.approval : DEFAULT_APPROVAL,
+    // Empty until the server's model list arrives, or on a host without one: the agent then uses its default.
+    model: typeof s.model === 'string' ? s.model : '',
     width: Number.isFinite(s.width) ? Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, s.width)) : DEFAULT_WIDTH,
     // Open unless the user closed it: beside a wide sheet it takes no cells from view. On a phone it would cover
     // most of the grid, and on an upright tablet half of it, leaving the sheet a phone's width, so there it waits
@@ -169,9 +171,15 @@ export function createAiPanel(ctx, env, { onToggle, onBusy } = {}) {
     el('span.ai-close-side', { html: icon('panelCollapse', 18), 'aria-hidden': 'true' }),
     el('span.ai-close-down', { html: icon('chevD', 18), 'aria-hidden': 'true' }));
   const title = el('h2.ai-title', { id: 'ai-panel-title' }, 'Assistant');
+  // The models Admin → AI turned on. Hidden until they arrive (or when the host has none).
+  const modelSel = el('select.ai-model', {
+    'aria-label': 'AI model', title: 'AI model', hidden: true,
+    onchange: () => { settings.model = modelSel.value; saveAiSettings(settings); },
+  });
   const head = el('header.ai-head', {},
     el('span.ai-head-mark', { html: icon('sparkle', 16, 2), 'aria-hidden': 'true' }),
     title,
+    modelSel,
     newChatBtn, menuBtn, closeBtn);
 
   const log = el('div.ai-log', { role: 'log', 'aria-labelledby': 'ai-panel-title', tabIndex: -1 });
@@ -224,6 +232,21 @@ export function createAiPanel(ctx, env, { onToggle, onBusy } = {}) {
   // The saved width is kept as it is (a larger window shows it all); the stylesheet draws what fits now.
   root.style.setProperty('--ai-w', `${settings.width}px`);
   sendBtn.disabled = true;
+
+  // The server's models replace the default as soon as the list arrives; without one the
+  // default model (and no picker) is what the host offers.
+  P.aiModels().then((list) => {
+    if (destroyed) return;
+    const models = list.filter((m) => m.id && m.tools !== false);
+    if (!models.length) return;
+    if (!models.some((m) => m.id === settings.model)) {
+      settings.model = models[0].id;
+      saveAiSettings(settings);
+    }
+    modelSel.replaceChildren(...models.map((m) => el('option', { value: m.id }, m.label || m.id)));
+    modelSel.value = settings.model;
+    modelSel.hidden = false;
+  }).catch(() => { /* keep the default model */ });
 
   /* ---------- Settings ---------- */
 

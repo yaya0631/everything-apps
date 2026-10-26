@@ -30,8 +30,29 @@ type PuterAI = {
   ai: {
     txt2img(prompt: string, options?: Record<string, unknown>): Promise<PuterImage>;
     chat(prompt: string, media?: string | File | string[], testMode?: boolean, options?: Record<string, unknown>): Promise<unknown>;
+    models?: () => Promise<unknown>;
   };
 };
+
+/** A model Admin → AI turned on. */
+export interface AssistantModel {
+  id: string;
+  label?: string;
+  tools?: boolean;
+}
+
+/** The person's models from this server; empty in the Puter desktop, which has no such list. */
+export async function listAssistantModels(): Promise<AssistantModel[]> {
+  const p = (globalThis as unknown as { puter?: PuterAI }).puter;
+  if (!p || typeof p.ai?.models !== 'function') return [];
+  try {
+    const list = await p.ai.models();
+    if (!Array.isArray(list)) return [];
+    return list.filter((m): m is AssistantModel => !!m && typeof m === 'object' && typeof (m as { id?: unknown }).id === 'string');
+  } catch {
+    return [];
+  }
+}
 
 export type AIErrorCode = 'unavailable' | 'cancelled' | 'moderation' | 'funds' | 'upstream' | 'bad-request' | 'network' | 'decode' | 'unknown';
 

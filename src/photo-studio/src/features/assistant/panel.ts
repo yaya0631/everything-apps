@@ -24,8 +24,9 @@ import {
 } from './controller';
 import { stepDetail, usesAI, type Step } from './plan';
 import type { Param } from './params';
-import { assistantSettings, modelLabel, saveAssistantSettings, sentNote } from './settings';
+import { assistantSettings, ASSISTANT_MODELS, modelLabel, saveAssistantSettings, sentNote } from './settings';
 import { AI_COMMANDS } from './catalog';
+import { listAssistantModels } from '../../imaging/ai/puter-ai';
 
 // The step whose settings are being edited.
 let editing: { plan: string; step: string } | undefined;
@@ -148,7 +149,9 @@ function renderLog(e: Editor, el: HTMLElement) {
   const input = el.querySelector<HTMLTextAreaElement>('.ast-input')!;
   input.disabled = busy;
   el.querySelector<HTMLButtonElement>('.ast-send')!.disabled = busy;
-  el.querySelector<HTMLElement>('.ast-model')!.textContent = modelLabel(assistantSettings.model);
+  const modelEl = el.querySelector<HTMLElement>('.ast-model')!;
+  if (modelEl instanceof HTMLSelectElement) modelEl.value = assistantSettings.model;
+  else modelEl.textContent = modelLabel(assistantSettings.model);
   el.querySelector<HTMLInputElement>('.ast-see input')!.checked = assistantSettings.seeImage;
   el.querySelector<HTMLElement>('.ast-sent')!.textContent = sentNote(e.hasDocument);
 }
@@ -191,10 +194,35 @@ export function mountAssistant(e: Editor, el: HTMLElement) {
   el.innerHTML = `<div class="ast-log" role="log" aria-label="Assistant conversation" aria-live="polite" tabindex="-1"></div>
 <form class="ast-compose" aria-label="Ask the Assistant">
 <textarea class="ast-input" rows="2" aria-label="Describe an edit or ask a question" placeholder="Describe an edit, or ask how to do something"></textarea>
-<div class="ast-compose-bar"><label class="ast-see" title="Let the model see a small preview of the visible image"><input type="checkbox"> Share image preview</label><span class="ast-spacer"></span><span class="ast-model muted" title="Change the model in the panel menu"></span><button type="submit" class="primary ast-send" aria-label="Send" title="Send (Enter)">${svg('arrow-up', 15)}</button></div>
+<div class="ast-compose-bar"><label class="ast-see" title="Let the model see a small preview of the visible image"><input type="checkbox"> Share image preview</label><span class="ast-spacer"></span><select class="ast-model muted" aria-label="AI model" title="AI model" hidden></select><button type="submit" class="primary ast-send" aria-label="Send" title="Send (Enter)">${svg('arrow-up', 15)}</button></div>
 <p class="ast-sent"></p></form>`;
   const form = el.querySelector<HTMLFormElement>('.ast-compose')!;
   const input = el.querySelector<HTMLTextAreaElement>('.ast-input')!;
+  // The server's models replace the fallback list when it offers one.
+  const modelSel = el.querySelector<HTMLSelectElement>('select.ast-model')!;
+  modelSel.addEventListener('change', () => {
+    assistantSettings.model = modelSel.value;
+    saveAssistantSettings();
+    renderLog(e, el);
+  });
+  void listAssistantModels().then((models) => {
+    const usable = models.filter((m) => m.id && m.tools !== false);
+    if (!usable.length) return;
+    ASSISTANT_MODELS.splice(0, ASSISTANT_MODELS.length, ...usable.map((m) => ({ id: m.id, label: m.label || m.id, note: '' })));
+    if (!usable.some((m) => m.id === assistantSettings.model)) {
+      assistantSettings.model = usable[0].id;
+      saveAssistantSettings();
+    }
+    modelSel.replaceChildren(...ASSISTANT_MODELS.map((m) => {
+      const o = document.createElement('option');
+      o.value = m.id;
+      o.textContent = m.label;
+      return o;
+    }));
+    modelSel.value = assistantSettings.model;
+    modelSel.hidden = false;
+    if (el.isConnected) renderLog(e, el);
+  });
   form.addEventListener('submit', (ev) => {
     ev.preventDefault();
     const text = input.value.trim();

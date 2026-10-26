@@ -266,7 +266,7 @@ export function createAgent({ chat, runTool, describe, approve, ready = null, sn
         let text = '';
         let cut = false; // the reply ran into MAX_OUTPUT_TOKENS
         const calls = [];
-        const iterable = chat(requestMessages(transcript), { model: AI_MODEL, tools: TOOLS, maxTokens: MAX_OUTPUT_TOKENS });
+        const iterable = chat(requestMessages(transcript), { model: settings().model || AI_MODEL, tools: TOOLS, maxTokens: MAX_OUTPUT_TOKENS });
         const iter = iterable[Symbol.asyncIterator]();
         for (;;) {
           const next = await Promise.race([iter.next(), stopSignal]);

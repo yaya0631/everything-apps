@@ -76,6 +76,7 @@
 .as-pane { width: 360px; flex-basis: 360px; }
 .as-pane .canvas-panel-heading h2 { display: flex; align-items: center; gap: 6px; flex: 1; }
 .as-pane .canvas-panel-heading .as-new { margin-left: auto; }
+.as-pane .canvas-panel-heading .as-model { max-width: 150px; height: 26px; margin-left: 8px; font: inherit; font-size: 12px; }
 .as-mark { display: inline-flex; }
 .as-pane .rv-pane-body { gap: 10px; overflow: hidden; display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .as-replaces { margin: 0 0 6px; font-size: 12px; color: var(--ed-ink-3); }

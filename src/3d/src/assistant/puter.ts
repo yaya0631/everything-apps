@@ -6,7 +6,30 @@ const SDK_URL = 'https://js.puter.com/v2/';
 interface PuterSDK {
   env?: string;
   auth?: { isSignedIn(): boolean; signIn(opts?: Record<string, unknown>): Promise<unknown> };
-  ai?: { chat: (messages: unknown, opts?: Record<string, unknown>) => Promise<unknown> };
+  ai?: { chat: (messages: unknown, opts?: Record<string, unknown>) => Promise<unknown>; models?: () => Promise<unknown> };
+}
+
+/** A model Admin → AI turned on, as this server lists it. */
+export interface AiModel {
+  id: string;
+  label?: string;
+  title?: string;
+  /** False for a model that cannot call tools; the assistant's tools need one that can. */
+  tools?: boolean;
+}
+
+/** The person's models from the server; empty in the Puter desktop, which has no such list. */
+export async function listAiModels(): Promise<AiModel[]> {
+  const p = sdk() ?? (await loadPuter());
+  const ask = p?.ai?.models;
+  if (!ask) return [];
+  try {
+    const list = await ask.call(p?.ai);
+    if (!Array.isArray(list)) return [];
+    return list.filter((m): m is AiModel => !!m && typeof m === 'object' && typeof (m as { id?: unknown }).id === 'string');
+  } catch {
+    return [];
+  }
 }
 
 const sdk = () => (globalThis as unknown as { puter?: PuterSDK }).puter ?? null;

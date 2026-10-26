@@ -39,6 +39,8 @@ export function loadAssistantSettings() {
     approval: APPROVAL_MODES.some((m) => m.id === s.approval)
       ? s.approval
       : DEFAULT_APPROVAL,
+    // Empty until the server's model list arrives; the agent then uses its default.
+    model: typeof s.model === "string" ? s.model : "",
     width: Number.isFinite(s.width)
       ? Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, s.width))
       : DEFAULT_WIDTH,
@@ -116,6 +118,16 @@ export function createAssistantPanel(env) {
   const settings = loadAssistantSettings();
   let isOpen = false;
   let destroyed = false;
+  // The models Admin → AI turned on; the settings menu offers them when they arrive.
+  let models = [];
+  void cloud.aiModels().then((list) => {
+    models = list.filter((m) => m.id && m.tools !== false);
+    if (!models.length) return;
+    if (!models.some((m) => m.id === settings.model)) {
+      settings.model = models[0].id;
+      saveAssistantSettings(settings);
+    }
+  });
 
   const agent = createAgent({
     chat: (messages, options) =>
@@ -295,6 +307,20 @@ export function createAssistantPanel(env) {
             saveAssistantSettings(settings);
           },
         })),
+        ...(models.length
+          ? [
+              { separator: true },
+              { header: "Model" },
+              ...models.map((m) => ({
+                label: m.label || m.id,
+                checked: settings.model === m.id,
+                onSelect: () => {
+                  settings.model = m.id;
+                  saveAssistantSettings(settings);
+                },
+              })),
+            ]
+          : []),
         { separator: true },
         { label: "New chat", icon: "SquarePen", onSelect: () => newChat() },
       ],

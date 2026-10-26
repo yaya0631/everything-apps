@@ -13,15 +13,9 @@ import { readAttachment } from './attachments';
 import { viewportUI } from './capture';
 import { renderMarkdown } from './markdown';
 import { SYSTEM_PROMPT, sceneSnapshot } from './prompt';
-import { inPuterDesktop, isSignedIn, loadPuter, signIn } from './puter';
+import { inPuterDesktop, isSignedIn, listAiModels, loadPuter, signIn } from './puter';
 import { type AssistantHost, runTool, toolSpecs } from './tools';
 
-export const ASSISTANT_MODELS: { id: string; label: string; title: string }[] = [
-  { id: 'claude-fable-5-1', label: 'Fable 5.1', title: 'Claude Fable 5.1: the most capable' },
-  { id: 'claude-opus-5-5', label: 'Opus 5.5', title: 'Claude Opus 5.5' },
-  { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5', title: 'Claude Sonnet 5.5: faster' },
-  { id: 'claude-haiku-5-5', label: 'Haiku 5.5', title: 'Claude Haiku 5.5: the fastest' },
-];
 const DEFAULT_MODEL = 'claude-opus-5-5';
 const SETTINGS_KEY = 'p3d:assistant';
 
@@ -31,7 +25,8 @@ const devChat = (): ChatFn | null => (import.meta.env.DEV ? ((window as unknown 
 function loadModel(): string {
   try {
     const v = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '{}') as { model?: string };
-    if (v.model && ASSISTANT_MODELS.some((m) => m.id === v.model)) return v.model;
+    // Keep any remembered id: it may be a server model that is not in the fallback list.
+    if (typeof v.model === 'string' && v.model.trim()) return v.model;
   } catch {
     /* settings are optional */
   }
@@ -184,16 +179,14 @@ export class AssistantPanel {
       model: () => this.model,
     });
 
-    const modelSel = el('select', { class: 'as-model', 'aria-label': 'AI model', title: 'AI model' });
-    for (const m of ASSISTANT_MODELS) {
-      const o = el('option', { value: m.id, title: m.title }, m.label);
-      o.selected = m.id === this.model;
-      modelSel.append(o);
-    }
+    const modelSel = el('select', { class: 'as-model', 'aria-label': 'AI model', title: 'AI model', hidden: true });
     modelSel.addEventListener('change', () => {
       this.model = modelSel.value;
       saveModel(this.model);
     });
+    // The server's models, not a fixed list: Admin → AI decides what people can pick.
+    // The picker stays hidden until that list arrives, so no placeholder names appear.
+    void this.loadModels(modelSel);
     const newChat = el('button', { class: 'as-icon-btn', type: 'button', 'aria-label': 'New chat', 'data-tip': 'New Chat' }, ic('new_chat'));
     newChat.addEventListener('click', () => this.reset());
     const close = el('button', { class: 'as-icon-btn', type: 'button', 'aria-label': 'Close the assistant', 'data-tip': 'Close' }, ic('x'));
@@ -243,6 +236,26 @@ export class AssistantPanel {
     );
     this.bindDrop();
     this.renderEmpty();
+  }
+
+  /** Swap the fallback list for the models this server has turned on. */
+  private async loadModels(sel: HTMLSelectElement) {
+    const models = (await listAiModels()).filter((m) => m.tools !== false);
+    if (!models.length) return;
+    const current = this.model;
+    sel.replaceChildren(
+      ...models.map((m) => {
+        const o = el('option', { value: m.id, title: m.title || m.label || m.id }, m.label || m.id);
+        o.selected = m.id === current;
+        return o;
+      }),
+    );
+    if (!models.some((m) => m.id === current)) {
+      this.model = models[0].id;
+      saveModel(this.model);
+      sel.value = this.model;
+    }
+    sel.hidden = false;
   }
 
   get busy() {
