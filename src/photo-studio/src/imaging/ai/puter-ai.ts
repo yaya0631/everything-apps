@@ -514,7 +514,7 @@ export type ChatMessage =
   | { role: 'tool'; tool_call_id: string; content: string };
 export type ChatTool = { type: 'function'; function: { name: string; description: string; parameters: Record<string, unknown> } };
 export type ChatReply = { text: string; calls: { id: string; name: string; args: unknown }[] };
-export type ChatOptions = { model?: string; tools?: ChatTool[]; signal?: AbortSignal };
+export type ChatOptions = { model?: string; tools?: ChatTool[]; signal?: AbortSignal; maxTokens?: number };
 
 /** Normalize a chat response (OpenAI-style `tool_calls`, or content blocks
  * with `tool_use`) into text and tool calls with parsed arguments. */
@@ -557,6 +557,7 @@ export async function chatWithTools(messages: ChatMessage[], opts: ChatOptions =
   const options: Record<string, unknown> = {};
   if (opts.model) options.model = opts.model;
   if (opts.tools?.length) options.tools = opts.tools;
+  if (opts.maxTokens) options.max_tokens = opts.maxTokens;
   if (opts.signal) options.signal = opts.signal;
   let res: unknown;
   try {

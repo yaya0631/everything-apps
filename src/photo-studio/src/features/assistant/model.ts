@@ -13,7 +13,7 @@ export type Reply = ({ kind: 'plan'; plan: RawPlan; text: string } | { kind: 'an
   // The preview image was refused by the model or route and left out.
   imageDropped?: boolean;
 };
-export type ChatFn = (messages: ChatMessage[], opts: { model?: string; tools?: ChatTool[]; signal?: AbortSignal }) => Promise<ChatReply>;
+export type ChatFn = (messages: ChatMessage[], opts: { model?: string; tools?: ChatTool[]; signal?: AbortSignal; maxTokens?: number }) => Promise<ChatReply>;
 export type ConverseInput = {
   request: string;
   history: Turn[];
@@ -29,9 +29,12 @@ export type ConverseInput = {
   progress?: (text: string) => void;
 };
 
-export const MAX_ROUNDS = 8;
+export const MAX_ROUNDS = 12;
 // Earlier turns sent with each request.
 export const HISTORY_TURNS = 12;
+// A plan can be long; leave room for the model's reasoning instead of letting a
+// provider's low default truncate it before the propose_plan call arrives.
+export const MAX_TOKENS = 8192;
 
 export const TOOLS: ChatTool[] = [
   {
@@ -175,11 +178,12 @@ async function conversation(input: ConverseInput, dropped: { value: boolean }): 
   const base: ChatMessage[] = [{ role: 'system', content: systemPrompt(input.catalog) }];
   for (const t of input.history.slice(-HISTORY_TURNS)) base.push({ role: t.role, content: t.text });
   let withImage = !!input.image;
+  let emptyRetries = 0;
   const messages: ChatMessage[] = [...base, { role: 'user', content: userContent(input, withImage) }];
   for (let round = 0; round < MAX_ROUNDS; round++) {
     let reply: ChatReply;
     try {
-      reply = await input.chat(messages, { model: input.model, tools: TOOLS, signal: input.signal });
+      reply = await input.chat(messages, { model: input.model, tools: TOOLS, signal: input.signal, maxTokens: MAX_TOKENS });
     } catch (error) {
       // A model or route that does not take images: try once more without.
       const code = (error as { code?: string })?.code;
@@ -191,6 +195,28 @@ async function conversation(input: ConverseInput, dropped: { value: boolean }): 
         continue;
       }
       throw error;
+    }
+    // Some free/reasoning providers occasionally return a completely empty
+    // turn. Try once without the preview, then once with an explicit nudge;
+    // only then tell the person that the request could not be read.
+    if (!reply.calls.length && !reply.text) {
+      if (withImage && emptyRetries === 0) {
+        withImage = false;
+        dropped.value = true;
+        messages[base.length] = { role: 'user', content: userContent(input, false) };
+        emptyRetries++;
+        round--;
+        continue;
+      }
+      if (emptyRetries < 2) {
+        emptyRetries++;
+        messages.push({
+          role: 'user',
+          content: 'Your previous reply was empty. Reply now: call propose_plan for the requested change, call answer for a question, or explain briefly why you cannot.',
+        });
+        continue;
+      }
+      return { kind: 'text', text: 'I could not work out what to do. Try describing the change differently, or pick another model in the Assistant settings.' };
     }
     const final = reply.calls.find((c) => c.name === 'propose_plan' || c.name === 'answer');
     if (final) {

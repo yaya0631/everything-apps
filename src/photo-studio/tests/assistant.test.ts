@@ -16,7 +16,7 @@ import { coerceArgs, coerceValue, matchOption, parseColor, parseNumber, type Par
 import { parseAspect, stepRect, adjustmentParams } from '../src/features/assistant/ops';
 import { buildPlan, commandArg, MAX_STEPS, setArgs, stepDetail, validatePlan, type PlanEnv } from '../src/features/assistant/plan';
 import { readGradient, readLiveShape, readPaintPaths, readPath } from '../src/features/assistant/art';
-import { converse, systemPrompt, TOOLS, type ChatFn } from '../src/features/assistant/model';
+import { converse, MAX_TOKENS, systemPrompt, TOOLS, type ChatFn } from '../src/features/assistant/model';
 import { PlanRun, runLabel } from '../src/features/assistant/runner';
 import { ask, conversation, forgetSession, setChat, type PlanMessage } from '../src/features/assistant/controller';
 import { Catalog, commandInput, commandParams, words } from '../src/features/assistant/catalog';
@@ -373,6 +373,28 @@ describe('Assistant conversation (scripted model)', () => {
     expect(r.imageDropped).toBe(true);
     expect(JSON.stringify(seen[0].at(-1))).toContain('image_url');
     expect(JSON.stringify(seen[1].at(-1))).not.toContain('image_url');
+  });
+  it('retries an empty turn without the preview before giving up', async () => {
+    const { chat, seen } = scripted(reply([], ''), reply([], 'ok'));
+    const r = await converse({ ...base(), image: 'data:image/jpeg;base64,AAAA', chat });
+    expect(r).toEqual({ kind: 'text', text: 'ok', imageDropped: true });
+    expect(JSON.stringify(seen[0].at(-1))).toContain('image_url');
+    expect(JSON.stringify(seen[1].at(-1))).not.toContain('image_url');
+  });
+  it('nudges the model after an empty text-only turn', async () => {
+    const { chat, seen } = scripted(reply([], ''), reply([], ''), reply([], 'ok'));
+    const r = await converse({ ...base(), chat });
+    expect(r).toEqual({ kind: 'text', text: 'ok' });
+    expect(JSON.stringify(seen[1].at(-1))).toContain('previous reply was empty');
+  });
+  it('sends a token budget so a reasoning model cannot truncate before the plan', async () => {
+    let budget: number | undefined;
+    const chat: ChatFn = async (_messages, opts) => {
+      budget = opts.maxTokens;
+      return reply([{ name: 'propose_plan', args: { title: 'T', steps: [] } }]);
+    };
+    await converse({ ...base(), chat });
+    expect(budget).toBe(MAX_TOKENS);
   });
   it('gives up after a bounded number of lookups', async () => {
     const chat: ChatFn = async () => reply([{ name: 'search_catalog', args: { query: 'x' } }]);
