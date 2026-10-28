@@ -5,9 +5,11 @@
 // one undo step. Schemas are pure data; implementations load what they need.
 import type { Editor } from '../../editor';
 import type { ScriptHost } from '../scripting/host';
-import { blends } from '../../model/document';
+import { blends, findLayer } from '../../model/document';
+import { groupLayers } from '../../model/layers';
 import { ADJUSTMENT_KINDS, ADJUSTMENT_LABELS, PHOTO_FILTER_PRESETS, defaultParams, type AdjustmentKind } from '../../imaging/adjust/model';
 import { coerceArgs, compactJSON, parseColor, summarizeArgs, type Param } from './params';
+import { addGradientLayer, addPath, addShape, paintStrokes, readGradient, readLiveShape, readPaintPaths, readPath, splitRefs } from './art';
 
 export type OpContext = { e: Editor; host: ScriptHost };
 export type SelectionEffect = 'needs' | 'creates' | 'clears';
@@ -17,6 +19,8 @@ export type OpSpec = {
   description: string;
   params: Param[];
   selection?: SelectionEffect;
+  // The step opens a new document, so later steps need not have one first.
+  document?: 'creates';
   // A readable one-line account of what the step does with these arguments.
   describe?: (args: Record<string, unknown>) => string;
   // Extra checks beyond the schema (problems in plain words).
@@ -162,9 +166,96 @@ async function layerId(host: ScriptHost, ref: unknown): Promise<string> {
   if (!found) throw new Error(`There is no layer named ${quote(s)}.`);
   return found.id;
 }
+/** Resolve comma/line separated names or an array of names to layer IDs. */
+async function layerIds(host: ScriptHost, ref: unknown): Promise<string[]> {
+  if (ref === undefined || ref === null || ref === '' || ref === 'selected' || ref === 'current') {
+    const sel = (await host.call('layers.selected', [])) as { id: string }[];
+    if (!sel.length) throw new Error('Select the layers first.');
+    return sel.map((l) => l.id);
+  }
+  const refs = Array.isArray(ref) ? ref.map((v) => String(v)).filter(Boolean) : splitRefs(ref);
+  if (!refs.length) throw new Error('Name at least one layer.');
+  return Promise.all(refs.map((r) => layerId(host, r)));
+}
 const pick = (args: Record<string, unknown>, keys: string[]) => Object.fromEntries(keys.filter((k) => args[k] !== undefined).map((k) => [k, args[k]]));
 
 export const OPS: OpSpec[] = [
+  {
+    id: 'op.new_document',
+    label: 'New Document',
+    description:
+      'Create a new RGB document (closing nothing) with a white, black, transparent or custom-color background and a resolution in pixels per inch. Use this first for requests that start from a blank canvas.',
+    params: [
+      { key: 'width', type: 'integer', label: 'Width', min: 1, max: 8192, unit: 'px', default: 3000, required: true },
+      { key: 'height', type: 'integer', label: 'Height', min: 1, max: 8192, unit: 'px', default: 4000, required: true },
+      { key: 'resolution', type: 'number', label: 'Resolution', min: 1, max: 10000, unit: 'ppi', default: 300 },
+      { key: 'background', type: 'string', label: 'Background', default: 'white', description: 'white, black, transparent, or a color such as #101820' },
+      { key: 'name', type: 'string', label: 'Name' },
+    ],
+    selection: 'clears',
+    document: 'creates',
+    check: (a) => {
+      if (!(typeof a.width === 'number' && a.width > 0 && typeof a.height === 'number' && a.height > 0)) return ['Give a width and height in pixels.'];
+      if (typeof a.width === 'number' && typeof a.height === 'number' && a.width * a.height > 24_000_000) return ['The document exceeds 24 megapixels.'];
+      return [];
+    },
+    describe: (a) => `${a.width ?? '?'} × ${a.height ?? '?'} px at ${a.resolution ?? 300} ppi, ${a.background ?? 'white'} background`,
+    async run({ e, host }, a) {
+      const bg = typeof a.background === 'string' && a.background.trim() ? a.background.trim() : 'white';
+      const named = ['white', 'black', 'transparent'].includes(bg.toLowerCase());
+      await host.call('documents.create', [
+        {
+          name: typeof a.name === 'string' ? a.name : 'Assistant Artwork',
+          width: a.width,
+          height: a.height,
+          resolution: a.resolution ?? 300,
+          background: named ? bg.toLowerCase() : bg,
+        },
+      ]);
+      e.fit();
+    },
+  },
+  {
+    id: 'op.select_layers',
+    label: 'Select Layers',
+    description: 'Select several layers by name or ID (comma or line separated), so a group, smart object, clipping mask or other multi-layer step can use them.',
+    params: [{ key: 'layers', type: 'text', label: 'Layers', required: true, description: 'Layer names or IDs, separated by commas or lines' }],
+    describe: (a) => String(a.layers ?? ''),
+    async run({ host }, a) {
+      await host.call('layers.select', [null, await layerIds(host, a.layers)]);
+    },
+  },
+  {
+    id: 'op.group_layers',
+    label: 'Group Layers',
+    description: 'Put the named layers (or the selected layers) into a new group, in one undoable step. The group is selected afterwards.',
+    params: [{ key: 'layers', type: 'text', label: 'Layers', description: 'Names or IDs separated by commas; omit for the selected layers' }, { key: 'name', type: 'string', label: 'Group name' }],
+    describe: (a) => `${a.name ? quote(a.name) : 'A group'}${a.layers ? ` from ${String(a.layers)}` : ' from the selected layers'}`,
+    async run({ e, host }, a) {
+      const ids = await layerIds(host, a.layers);
+      let gid: string | undefined;
+      e.command('Group Layers', (d) => {
+        gid = groupLayers(d, new Set(ids));
+        if (gid && typeof a.name === 'string' && a.name.trim()) {
+          const g = findLayer(d.layers, gid);
+          if (g) g.name = a.name.trim().slice(0, 200);
+        }
+      });
+      if (gid) e.selectLayers([gid]);
+      e.update();
+    },
+  },
+  {
+    id: 'op.smart_object',
+    label: 'Convert to Smart Object',
+    description: 'Convert the named layers (or the selected layers) into one embedded Smart Object. The object keeps its contents editable with Edit Contents.',
+    params: [{ key: 'layers', type: 'text', label: 'Layers', description: 'Names or IDs separated by commas; omit for the selected layers' }],
+    describe: (a) => (a.layers ? `From ${String(a.layers)}` : 'From the selected layers'),
+    async run({ host }, a) {
+      await host.call('layers.select', [null, await layerIds(host, a.layers)]);
+      await host.call('commands.run', ['layer.embed-convert']);
+    },
+  },
   {
     id: 'op.select',
     label: 'Select Area',
@@ -326,6 +417,151 @@ export const OPS: OpSpec[] = [
     },
   },
   {
+    id: 'op.add_shape',
+    label: 'Add Shape',
+    description:
+      'Add a live shape layer: rect, ellipse, triangle, polygon or line. Give x, y, width, height in document pixels. Fill can be a color or a gradient object; a line uses stroke only. Shapes stay editable with the shape tools.',
+    params: [
+      { key: 'kind', type: 'enum', label: 'Shape', required: true, default: 'rect', options: ['rect', 'ellipse', 'triangle', 'polygon', 'line'].map((value) => ({ value })) },
+      { key: 'x', type: 'number', label: 'Left', unit: 'px' },
+      { key: 'y', type: 'number', label: 'Top', unit: 'px' },
+      { key: 'width', type: 'number', label: 'Width', min: 1, max: 8192, unit: 'px' },
+      { key: 'height', type: 'number', label: 'Height', min: 1, max: 8192, unit: 'px' },
+      { key: 'x1', type: 'number', label: 'Line start X', unit: 'px' },
+      { key: 'y1', type: 'number', label: 'Line start Y', unit: 'px' },
+      { key: 'x2', type: 'number', label: 'Line end X', unit: 'px' },
+      { key: 'y2', type: 'number', label: 'Line end Y', unit: 'px' },
+      { key: 'radius', type: 'number', label: 'Corner radius', min: 0, max: 4096, unit: 'px' },
+      { key: 'sides', type: 'integer', label: 'Sides', min: 3, max: 100 },
+      { key: 'star', type: 'number', label: 'Star inset', min: 0, max: 0.99 },
+      { key: 'smoothIndents', type: 'boolean', label: 'Smooth indents' },
+      { key: 'arrowStart', type: 'boolean', label: 'Start arrow' },
+      { key: 'arrowEnd', type: 'boolean', label: 'End arrow' },
+      { key: 'arrowWidth', type: 'number', label: 'Arrow width', min: 1, unit: 'px' },
+      { key: 'arrowLength', type: 'number', label: 'Arrow length', min: 0.1 },
+      { key: 'concavity', type: 'number', label: 'Arrow concavity', min: -50, max: 50 },
+      { key: 'fill', type: 'color', label: 'Fill' },
+      { key: 'gradient', type: 'object', label: 'Gradient fill', description: '{ stops: [{ position: 0, color: "#101820" }, { position: 1, color: "#f3b25b" }], style: "linear", angle: 90 }' },
+      { key: 'stroke', type: 'color', label: 'Stroke' },
+      { key: 'strokeWidth', type: 'number', label: 'Stroke width', min: 0.1, max: 1000, unit: 'px' },
+      { key: 'strokeAlign', type: 'enum', label: 'Stroke alignment', options: ['inside', 'center', 'outside'].map((value) => ({ value })) },
+      { key: 'strokeOpacity', type: 'number', label: 'Stroke opacity', min: 0, max: 100, unit: '%' },
+      { key: 'name', type: 'string', label: 'Layer name' },
+      opacityParam,
+      blendParam,
+    ],
+    check: (a) => {
+      const s = readLiveShape(a);
+      if ('error' in s) return [s.error];
+      const g = a.gradient === undefined ? undefined : readGradient(a.gradient);
+      return g && 'error' in g ? [g.error] : [];
+    },
+    describe: (a) => `${String(a.kind ?? 'shape')}${a.width || a.height ? ` ${a.width ?? '?'} × ${a.height ?? '?'} px` : ''}${a.fill ? `, ${String(a.fill)}` : ''}${a.stroke ? `, stroke ${String(a.stroke)}` : ''}`,
+    async run({ e }, a) {
+      const r = addShape(e, a);
+      if ('error' in r) throw new Error(r.error);
+    },
+  },
+  {
+    id: 'op.add_path',
+    label: 'Add Path',
+    description:
+      'Add a freeform pen path as a vector shape: points are [x, y] pairs or { x, y, smooth, in, out } in document pixels. Closed paths can be filled; open paths use a stroke. Use this for a bottle silhouette or other drawn artwork.',
+    params: [
+      { key: 'points', type: 'object', label: 'Points', required: true, description: 'An array of [x,y] or {x,y,smooth,in,out} points' },
+      { key: 'closed', type: 'boolean', label: 'Closed', default: true },
+      { key: 'fill', type: 'color', label: 'Fill' },
+      { key: 'gradient', type: 'object', label: 'Gradient fill', description: '{ stops, style, angle } like Add Shape' },
+      { key: 'stroke', type: 'color', label: 'Stroke' },
+      { key: 'strokeWidth', type: 'number', label: 'Stroke width', min: 0.1, max: 1000, unit: 'px' },
+      { key: 'strokeAlign', type: 'enum', label: 'Stroke alignment', options: ['inside', 'center', 'outside'].map((value) => ({ value })) },
+      { key: 'strokeOpacity', type: 'number', label: 'Stroke opacity', min: 0, max: 100, unit: '%' },
+      { key: 'name', type: 'string', label: 'Layer name' },
+      opacityParam,
+      blendParam,
+    ],
+    check: (a) => {
+      const p = readPath(a.points, a.closed !== false);
+      if ('error' in p) return [p.error];
+      const g = a.gradient === undefined ? undefined : readGradient(a.gradient);
+      return g && 'error' in g ? [g.error] : [];
+    },
+    describe: (a) => `${a.closed === false ? 'Open' : 'Closed'} path${Array.isArray(a.points) ? `, ${a.points.length} points` : ''}${a.name ? `: ${quote(a.name)}` : ''}`,
+    async run({ e }, a) {
+      const r = addPath(e, a);
+      if ('error' in r) throw new Error(r.error);
+    },
+  },
+  {
+    id: 'op.add_gradient_layer',
+    label: 'Add Gradient Fill Layer',
+    description:
+      'Add a non-destructive gradient fill layer over the whole canvas (or mask it to the active selection). Stops are { position, color, opacity }; position 0..1 (0..100 also works), opacity 0..100. Use for skies, fog, glow and color grading.',
+    params: [
+      { key: 'gradient', type: 'object', label: 'Gradient', required: true, description: '{ stops: [...], style: "linear"|"radial"|"angle"|"reflected"|"diamond", angle, reverse, scale }' },
+      { key: 'name', type: 'string', label: 'Layer name' },
+      opacityParam,
+      blendParam,
+    ],
+    selection: 'clears',
+    check: (a) => {
+      const g = readGradient(a.gradient);
+      return 'error' in g ? [g.error] : [];
+    },
+    describe: (a) => {
+      const g = a.gradient && typeof a.gradient === 'object' ? (a.gradient as Record<string, unknown>) : {};
+      return `${String(g.style ?? 'linear')} gradient${Array.isArray(g.stops) ? `, ${g.stops.length} stops` : ''}${a.blendMode ? `, ${String(a.blendMode)}` : ''}${a.opacity !== undefined ? `, ${String(a.opacity)}%` : ''}`;
+    },
+    async run({ e }, a) {
+      const r = addGradientLayer(e, a);
+      if ('error' in r) throw new Error(r.error);
+    },
+  },
+  {
+    id: 'op.paint',
+    label: 'Paint Strokes',
+    description:
+      'Paint one or more raster brush strokes with the app’s paint engine on the selected pixel layer (a new pixel layer is added when the selected layer is not paintable). points is one polyline, paths is several; each point is [x,y]. Soft large brushes with scatter and jitter make fog, glow and particle fields; small hard brushes make details.',
+    params: [
+      layerRef,
+      { key: 'points', type: 'object', label: 'Points', description: 'One polyline: [[x,y], ...]' },
+      { key: 'paths', type: 'object', label: 'Several strokes', description: 'Several polylines: [[[x,y], ...], ...]' },
+      { key: 'color', type: 'color', label: 'Color' },
+      { key: 'size', type: 'number', label: 'Brush size', min: 0.5, max: 2500, unit: 'px' },
+      { key: 'hardness', type: 'number', label: 'Hardness', min: 0, max: 1 },
+      { key: 'opacity', type: 'number', label: 'Opacity', min: 0, max: 100, unit: '%' },
+      { key: 'flow', type: 'number', label: 'Flow', min: 0, max: 100, unit: '%' },
+      { key: 'spacing', type: 'number', label: 'Spacing', min: 0.01, max: 4 },
+      { key: 'roundness', type: 'number', label: 'Roundness', min: 0.01, max: 1 },
+      { key: 'angle', type: 'number', label: 'Angle', unit: '°' },
+      blendParam,
+      { key: 'erase', type: 'boolean', label: 'Erase' },
+      { key: 'scatter', type: 'number', label: 'Scatter', min: 0, max: 10 },
+      { key: 'count', type: 'integer', label: 'Dabs per stamp', min: 1, max: 200 },
+      { key: 'sizeJitter', type: 'number', label: 'Size jitter', min: 0, max: 1 },
+      { key: 'opacityJitter', type: 'number', label: 'Opacity jitter', min: 0, max: 1 },
+      { key: 'angleJitter', type: 'number', label: 'Angle jitter', min: 0, max: 1 },
+      { key: 'flowJitter', type: 'number', label: 'Flow jitter', min: 0, max: 1 },
+      { key: 'roundnessJitter', type: 'number', label: 'Roundness jitter', min: 0, max: 1 },
+      { key: 'pressureSize', type: 'boolean', label: 'Pressure controls size' },
+      { key: 'pressureOpacity', type: 'boolean', label: 'Pressure controls opacity' },
+      { key: 'seed', type: 'integer', label: 'Random seed', min: 1 },
+      { key: 'name', type: 'string', label: 'New layer name' },
+    ],
+    check: (a) => {
+      const p = readPaintPaths(a);
+      return 'error' in p ? [p.error] : [];
+    },
+    describe: (a) => {
+      const paths = Array.isArray(a.paths) ? a.paths.length : Array.isArray(a.points) ? 1 : 0;
+      return `${paths ? `${paths} stroke${paths === 1 ? '' : 's'}` : 'Strokes'}${a.size ? `, ${String(a.size)} px` : ''}${a.color ? `, ${String(a.color)}` : ''}${a.erase ? ', erasing' : ''}`;
+    },
+    async run({ e }, a) {
+      const r = await paintStrokes(e, a);
+      if (r && 'error' in r) throw new Error(r.error);
+    },
+  },
+  {
     id: 'op.add_layer',
     label: 'Add Layer',
     description: 'Add an empty pixel layer (or one filled with a color) above the selected layer.',
@@ -384,6 +620,39 @@ export const OPS: OpSpec[] = [
     describe: (a) => quote(a.layer),
     async run({ host }, a) {
       await host.call('layers.remove', [null, await layerId(host, a.layer)]);
+    },
+  },
+  {
+    id: 'op.export',
+    label: 'Export Flattened Image',
+    description:
+      'Download a flattened image of the document directly, without a save dialog. Use png for lossless artwork; quality applies to jpeg/webp, scale or width/height resizes the export. This is the flattened companion to Download Project.',
+    params: [
+      { key: 'format', type: 'enum', label: 'Format', default: 'png', options: ['png', 'jpeg', 'webp'].map((value) => ({ value })) },
+      { key: 'quality', type: 'integer', label: 'Quality', min: 1, max: 100 },
+      { key: 'scale', type: 'number', label: 'Scale', min: 0.01, max: 8 },
+      { key: 'width', type: 'integer', label: 'Width', min: 1, max: 8192, unit: 'px' },
+      { key: 'height', type: 'integer', label: 'Height', min: 1, max: 8192, unit: 'px' },
+      { key: 'name', type: 'string', label: 'File name' },
+    ],
+    describe: (a) => `${String(a.format ?? 'png').toUpperCase()}${a.scale ? ` at ${String(a.scale)}×` : a.width || a.height ? ` at ${a.width ?? 'auto'} × ${a.height ?? 'auto'} px` : ''}${a.name ? `: ${quote(a.name)}` : ''}`,
+    async run({ host }, a) {
+      const out = (await host.call('documents.export', [null, { format: a.format ?? 'png', ...pick(a, ['quality', 'scale', 'width', 'height', 'name']) }])) as { data: Uint8Array; type: string; name: string };
+      const { download } = await import('../../persistence/puter');
+      const bytes = out.data instanceof Uint8Array ? out.data : new Uint8Array(out.data);
+      download(new Blob([bytes.buffer as ArrayBuffer], { type: out.type }), out.name);
+      await host.call('app.message', [`Exported ${out.name}`]);
+    },
+  },
+  {
+    id: 'op.download_project',
+    label: 'Download Layered Project',
+    description: 'Download the layered .photo project file directly, without a save dialog. Every layer, group, mask, Smart Object and adjustment stays editable when it is opened again.',
+    params: [],
+    describe: () => 'Layered .photo project',
+    async run({ e }) {
+      const { downloadProject } = await import('../files/save');
+      await downloadProject(e);
     },
   },
   {

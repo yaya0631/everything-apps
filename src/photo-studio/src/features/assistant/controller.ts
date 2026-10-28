@@ -279,8 +279,8 @@ export function discardPlan(m: PlanMessage) {
   changed();
 }
 
-/** Run a plan: all remaining steps, or the next one. */
-export async function runPlan(e: Editor, m: PlanMessage, mode: 'all' | 'step') {
+/** Run a plan: all remaining steps, one stage at a time, or the next step. */
+export async function runPlan(e: Editor, m: PlanMessage, mode: 'all' | 'stage' | 'step' | 'rest') {
   const c = conversation(e);
   if (c.run && c.run.message !== m) return e.message('Another plan is running. Stop it first.');
   if (m.state !== 'ready' && m.state !== 'stepping') return;
@@ -298,11 +298,18 @@ export async function runPlan(e: Editor, m: PlanMessage, mode: 'all' | 'step') {
   // after them (or in the same one when the document did not change).
   const r = c.run;
   m.state = 'running';
+  m.outcome = undefined;
   changed();
   try {
-    await r.run.run(mode === 'step' ? 1 : Infinity);
+    await r.run.run(mode === 'step' ? 1 : Infinity, mode === 'stage');
     if (r.run.done) end(e, c, m, r.run.stopped ? 'stopped' : 'done');
-    else m.state = 'stepping';
+    else {
+      m.state = 'stepping';
+      const ran = m.plan.steps.filter((s) => s.status === 'done').length;
+      m.outcome = r.run.pausedStage
+        ? `Paused before the “${r.run.pausedStage}” stage, after ${ran} of ${m.plan.steps.length} steps. Continue when you are ready.`
+        : `Paused after ${ran} of ${m.plan.steps.length} steps. Continue when you are ready.`;
+    }
   } catch {
     r.run.finish();
     end(e, c, m, 'failed');

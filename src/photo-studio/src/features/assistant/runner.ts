@@ -37,6 +37,9 @@ export class PlanRun {
   // the same undo step.
   private pausedAt?: { session: DocumentSession; doc: PhotoDocument };
   private finished = false;
+  private lastStage?: string;
+  /** The stage the run stopped before, when it paused at a boundary. */
+  pausedStage?: string;
   stopped = false;
   /** Undo steps the run made so far (more than one when the document was
    * edited between steps). */
@@ -92,12 +95,27 @@ export class PlanRun {
     }
   }
   /** Run the remaining steps (or `count` of them); stops at the first failure.
-   * A run that leaves steps for later pauses (see `pause`). */
-  async run(count = Infinity) {
+   * With `stopAtStage`, it also stops before the next stage so the user can
+   * read the narration and inspect the canvas. A run that leaves steps for
+   * later pauses (see `pause`). */
+  async run(count = Infinity, stopAtStage = false) {
+    this.pausedStage = undefined;
+    if (this.lastStage === undefined) {
+      const done = this.plan.steps.filter((s) => s.status === 'done' && s.stage);
+      this.lastStage = done.at(-1)?.stage;
+    }
+    let ran = 0;
     for (let n = 0; n < count && !this.stopped; n++) {
       const i = this.next;
       if (i < 0) break;
-      await this.step(this.plan.steps[i]);
+      const step = this.plan.steps[i];
+      if (stopAtStage && ran > 0 && step.stage && step.stage !== this.lastStage) {
+        this.pausedStage = step.stage;
+        break;
+      }
+      await this.step(step);
+      if (step.stage) this.lastStage = step.stage;
+      ran++;
     }
     if (this.next < 0 || this.stopped) this.finish();
     else this.pause();

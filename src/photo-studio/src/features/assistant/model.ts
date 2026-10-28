@@ -62,12 +62,24 @@ export const TOOLS: ChatTool[] = [
     type: 'function',
     function: {
       name: 'propose_plan',
-      description: 'Propose the edit as ordered steps. The user reviews the plan and runs it (all at once or step by step); the whole run is one undo step. Call this once per request that changes the document.',
+      description: 'Propose the work as ordered stages and steps. The user reviews the plan and runs it all at once, stage by stage, or step by step; the whole run is one undo step. Call this once per request that changes the document.',
       parameters: {
         type: 'object',
         properties: {
-          title: { type: 'string', description: 'A short name for the edit, e.g. "Dramatic sky, 16:9 crop"' },
-          summary: { type: 'string', description: 'One or two sentences on what the plan does and anything the user should know (dialogs that will open, AI credits).' },
+          title: { type: 'string', description: 'A short name for the work, e.g. "Forest bottle poster, 3000 × 4000"' },
+          summary: { type: 'string', description: 'One or two sentences on what the plan makes and anything the user should know (dialogs, AI credits, downloads).' },
+          stages: {
+            type: 'array',
+            description: 'Named stages in order. Every step names one in its stage field.',
+            items: {
+              type: 'object',
+              properties: {
+                title: { type: 'string', description: 'Short stage name, e.g. "Base painting" or "Light and grade"' },
+                narration: { type: 'string', description: 'One sentence that explains what happens in this stage, shown above its steps' },
+              },
+              required: ['title'],
+            },
+          },
           steps: {
             type: 'array',
             items: {
@@ -76,12 +88,13 @@ export const TOOLS: ChatTool[] = [
                 action: { type: 'string', description: 'A command ID or an operation ID (op.*)' },
                 args: { type: 'object', description: 'Settings for the command or operation (see get_details)' },
                 note: { type: 'string', description: 'Why this step, in a few words' },
+                stage: { type: 'string', description: 'The title of the stage this step belongs to' },
               },
               required: ['action'],
             },
           },
         },
-        required: ['title', 'steps'],
+        required: ['title', 'stages', 'steps'],
       },
     },
   },
@@ -120,12 +133,20 @@ Finding commands:
 - Call get_details before giving args to a command, to learn its settings and ranges. Operations (op.*) are listed below with their args.
 
 Planning rules:
-- Prefer operations and non-destructive edits: adjustment layers with settings (op.add_adjustment_layer), layer styles, masks. A selection active when an adjustment layer is added becomes its mask.
-- "input: settings" commands take args directly. "input: dialog" commands open a dialog where the user picks settings during the run; use them only when nothing else fits. Tools cannot be used by a plan.
-- "input: ai" commands (Generate Image, Edit with Prompt, AI Fill, AI Expand) create content with generative AI and spend the user's Puter credits. Use them only when the request needs new content that editing cannot make; put a precise prompt in args.prompt and say in the summary that it uses AI credits. Their dialog opens prefilled and the user presses Generate.
+- Complex requests are welcome. Split substantial artwork into named stages (3–10 is usually enough) and every step names its stage. The panel can run a plan stage by stage, pausing at each boundary so the user can read the narration and watch the canvas. Give each stage a narration sentence and each step a short note.
+- Prefer operations and non-destructive edits: adjustment layers with settings (op.add_adjustment_layer), layer styles, masks. A selection active when an adjustment layer or gradient fill layer is added becomes its mask.
+- Build new pixels with the app's own drawing operations: op.add_shape for live shapes, op.add_path for pen/freeform silhouettes, op.add_gradient_layer for skies and atmosphere, and op.paint for brush strokes, fog, grain, glow and particles. These use the same shape, pen, gradient and brush engines as the tools. Do not substitute generative AI when the user asked for native drawing or painting.
+- Shape and path coordinates are document pixels, origin at the top left. Keep the important content inside the canvas. Give every layer and group a clear name; group related layers; use masks and clipping masks to contain edges; use Smart Objects for assembled groups that should stay editable.
+- "input: settings" commands take args directly. "input: dialog" commands open a dialog where the user picks settings during the run; use them only when nothing else fits. Tools cannot be used by a plan; use the equivalent op.* or command.
+- "input: ai" commands (Generate Image, Edit with Prompt, AI Fill, AI Expand) create content with generative AI and spend the user's Puter credits. Use them only when the request needs new content that native editing cannot make, and then put a precise prompt in args.prompt and say in the summary that it uses AI credits. Their dialog opens prefilled and the user presses Generate.
 - A command that needs a selection must follow a step that makes one (op.select, select.subject, select.sky, select.all...). Remove the background of a subject with layer.remove-background (it masks the selected layer).
-- Coordinates and sizes are document pixels, origin at the top left. Use the layer names from the document description.
-- Keep plans short and in a sensible order. Write titles, summaries and notes in plain words for the user, without IDs.
+- For deliverables, finish with op.download_project for the layered .photo file and op.export for a flattened PNG or JPEG. Both download directly; no save dialog is needed.
+- Keep plans efficient: one step can carry many paths or strokes (op.paint accepts a paths array). A large artwork can use 20–80 steps without becoming noisy, but do not pad plans with redundant steps.
+- Use the layer names from the document description so operations such as select, group, clip and convert refer to the right layers.
+
+Stages:
+- stages is an ordered array of { title, narration }. Every step has a stage matching one of those titles. Keep stage names short and concrete ("Canvas and sky", "Bottle form", "City inside the glass", "Light, grain and finish").
+- The narration is the user-facing story of the stage; the step note says why that particular step exists. Do not put IDs in either.
 
 Operations:
 ${ops}

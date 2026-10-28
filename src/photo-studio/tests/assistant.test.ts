@@ -14,7 +14,8 @@ import type { ChatMessage, ChatReply } from '../src/imaging/ai/puter-ai';
 import { parseChatReply } from '../src/imaging/ai/puter-ai';
 import { coerceArgs, coerceValue, matchOption, parseColor, parseNumber, type Param } from '../src/features/assistant/params';
 import { parseAspect, stepRect, adjustmentParams } from '../src/features/assistant/ops';
-import { buildPlan, commandArg, setArgs, stepDetail, validatePlan, type PlanEnv } from '../src/features/assistant/plan';
+import { buildPlan, commandArg, MAX_STEPS, setArgs, stepDetail, validatePlan, type PlanEnv } from '../src/features/assistant/plan';
+import { readGradient, readLiveShape, readPaintPaths, readPath } from '../src/features/assistant/art';
 import { converse, systemPrompt, TOOLS, type ChatFn } from '../src/features/assistant/model';
 import { PlanRun, runLabel } from '../src/features/assistant/runner';
 import { ask, conversation, forgetSession, setChat, type PlanMessage } from '../src/features/assistant/controller';
@@ -237,6 +238,51 @@ describe('Assistant plan validation', () => {
     expect(plan.steps[1].problems).toEqual([]);
     expect(plan.steps[1].args).toEqual({ foreground: '#ff0000' });
   });
+  it('lets a new document open the plan and clears the selection', () => {
+    const plan = buildPlan(
+      {
+        steps: [
+          { action: 'op.new_document', args: { width: 3000, height: 4000, resolution: 300 } },
+          { action: 'select.all' },
+          { action: 'op.new_document', args: { width: 800, height: 600, resolution: 72 } },
+          { action: 'image.crop' },
+        ],
+      },
+      'art',
+      env({ hasDocument: false, hasSelection: true }),
+    );
+    expect(plan.steps[0].problems).toEqual([]);
+    expect(plan.steps[1].problems).toEqual([]);
+    expect(plan.steps[2].problems).toEqual([]);
+    // The second new document starts with no selection.
+    expect(plan.steps[3].problems).toEqual(['“Crop” needs a selection, and there is none at this point. Add a step that selects an area first.']);
+  });
+  it('keeps stage headings in order and names each step', () => {
+    const plan = buildPlan(
+      {
+        title: 'Art',
+        stages: [
+          { title: 'Canvas', narration: 'Lay the ground.' },
+          { title: 'Bottle', narration: 'Draw the glass.' },
+          { title: 'Finish' },
+        ],
+        steps: [
+          { action: 'select.all', stage: 'canvas' },
+          { action: 'select.deselect', stage: 'Canvas' },
+          { action: 'select.all', stage: 'Bottle' },
+          { action: 'select.deselect', stage: 'Finish' },
+        ],
+      },
+      'art',
+      env(),
+    );
+    expect(plan.stages).toEqual([
+      { title: 'Canvas', narration: 'Lay the ground.' },
+      { title: 'Bottle', narration: 'Draw the glass.' },
+      { title: 'Finish' },
+    ]);
+    expect(plan.steps.map((s) => s.stage)).toEqual(['Canvas', 'Canvas', 'Bottle', 'Finish']);
+  });
   it('checks operation arguments', () => {
     const plan = buildPlan(
       { steps: [{ action: 'op.crop', args: { aspect: 'wide' } }, { action: 'op.layer_style', args: { style: { glow: true } } }, { action: 'op.add_text', args: {} }, { action: 'op.resize_image', args: {} }] },
@@ -251,8 +297,36 @@ describe('Assistant plan validation', () => {
     ]);
   });
   it('keeps plans to a bounded length', () => {
-    const plan = buildPlan({ steps: Array.from({ length: 40 }, () => ({ action: 'select.all' })) }, 'r', env());
-    expect(plan.steps).toHaveLength(30);
+    const plan = buildPlan({ steps: Array.from({ length: MAX_STEPS + 20 }, () => ({ action: 'select.all' })) }, 'r', env());
+    expect(plan.steps).toHaveLength(MAX_STEPS);
+    expect(plan.steps.at(-1)!.notes.at(-1)).toContain(`only the first ${MAX_STEPS}`);
+  });
+  it('reads shape, path, gradient and paint arguments', () => {
+    expect(readLiveShape({ kind: 'rect', x: 10, y: 20, width: 100, height: 50, radius: 8 })).toMatchObject({ live: { kind: 'rect', x: 10, y: 20, width: 100, height: 50, radii: [8, 8, 8, 8] } });
+    expect(readLiveShape({ kind: 'line', x1: 0, y1: 0, x2: 100, y2: 0 })).toMatchObject({ live: { kind: 'line', x1: 0, x2: 100 }, open: true });
+    expect(readLiveShape({ kind: 'bottle', width: 20, height: 20 })).toMatchObject({ error: expect.stringContaining('rect') });
+    const path = readPath([[0, 0], [50, 0], [50, 50]], true);
+    expect('error' in path).toBe(false);
+    if (!('error' in path)) {
+      expect(path.paths[0].open).toBe(false);
+      expect(path.paths[0].knots).toHaveLength(3);
+      expect(path.paths[0].knots[1].points[0]).not.toBe(50);
+    }
+    expect(readPath([[0, 0]], true)).toMatchObject({ error: expect.stringContaining('at least two') });
+    const gradient = readGradient({ stops: [[0, '#000000'], [100, '#ffffff']], style: 'radial', angle: 45 });
+    expect('error' in gradient).toBe(false);
+    if (!('error' in gradient)) {
+      expect(gradient.style).toBe('radial');
+      expect(gradient.gradient.kind).toBe('solid');
+      if (gradient.gradient.kind === 'solid') expect(gradient.gradient.colorStops[1].location).toBe(1);
+    }
+    const percent = readGradient({ stops: [['0%', '#000000'], ['100%', '#ffffff']], style: 'Radial' });
+    expect('error' in percent).toBe(false);
+    if (!('error' in percent)) expect(percent.style).toBe('radial');
+    expect(readPaintPaths({ paths: [[[1, 2], [3, 4]], [[5, 6]]] })).toEqual({ paths: [[[1, 2], [3, 4]], [[5, 6]]] });
+    expect(readPaintPaths({ points: [[1, 2]] })).toEqual({ paths: [[[1, 2]]] });
+    expect(readPaintPaths({ points: [1, 2] })).toEqual({ paths: [[[1, 2]]] });
+    expect(readPaintPaths({})).toMatchObject({ error: expect.stringContaining('points') });
   });
 });
 
@@ -456,6 +530,35 @@ describe('Assistant runs', () => {
     expect([top().name, top().blend, top().opacity]).toEqual(['Background', 'normal', 0.4]);
     e.history.undo();
     expect(top().opacity).toBe(1);
+  });
+  it('runs a stage at a time and pauses before the next heading', async () => {
+    const e = mockEditor();
+    const plan = buildPlan(
+      {
+        title: 'Stages',
+        stages: [{ title: 'Base', narration: 'First.' }, { title: 'Light', narration: 'Second.' }],
+        steps: [
+          { action: 'op.set_layer', args: { opacity: 40 }, stage: 'Base' },
+          { action: 'op.set_layer', args: { name: 'Base layer' }, stage: 'Base' },
+          { action: 'op.set_layer', args: { visible: false }, stage: 'Light' },
+          { action: 'op.set_layer', args: { opacity: 80 }, stage: 'Light' },
+        ],
+      },
+      'staged',
+      planEnv(),
+    );
+    const start = e.history.position;
+    const run = new PlanRun(e as unknown as Editor, plan);
+    await run.run(Infinity, true);
+    expect(run.done).toBe(false);
+    expect(run.pausedStage).toBe('Light');
+    expect(plan.steps.map((s) => s.status)).toEqual(['done', 'done', 'pending', 'pending']);
+    expect(e.history.position).toBe(start + 1);
+    await run.run(Infinity, true);
+    expect(run.done).toBe(true);
+    expect(plan.steps.map((s) => s.status)).toEqual(['done', 'done', 'done', 'done']);
+    expect(e.history.position).toBe(start + 1);
+    expect([e.doc.layers[0].name, e.doc.layers[0].visible, e.doc.layers[0].opacity]).toEqual(['Base layer', false, 0.8]);
   });
   it('does not hold history open while a plan is paused', async () => {
     const e = mockEditor();

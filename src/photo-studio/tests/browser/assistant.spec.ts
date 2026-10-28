@@ -2,7 +2,8 @@
 // replaced by a scripted stub: plans from tool-calling replies, running them
 // as one undo step, step-by-step runs and edits, answers with "Show me", the
 // start screen's describe-an-edit box, and recording and placing AI results.
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Download, type Page } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
 import { boot, historyLabels, idle, openImage, start, undo } from './helpers';
 
 // puter.ai.chat answers from window.__chatScript (one reply per call, in
@@ -331,6 +332,185 @@ test('Generation History places a Generate Image result as the dialog fitted it'
   await expect.poll(() => page.evaluate(() => window.photoStudio.doc.layers.length)).toBe(3);
   await idle(page);
   expect(await alpha(-1)).toEqual([0, 255, 0]);
+});
+
+test('a staged native artwork plan pauses between stages and builds real layers', async ({ page }) => {
+  await boot(page, 'default', PUTER);
+  await openAssistant(page);
+  await script(page, {
+    calls: [
+      {
+        name: 'propose_plan',
+        args: {
+          title: 'Bottle at dusk',
+          summary: 'Paints a small study with the shape, pen, gradient, brush and adjustment engines.',
+          stages: [
+            { title: 'Canvas', narration: 'Start a 300 ppi canvas and lay in the night sky.' },
+            { title: 'Bottle', narration: 'Draw the glass silhouette and the moon.' },
+            { title: 'Light', narration: 'Add mist and a gentle curve.' },
+          ],
+          steps: [
+            { action: 'op.new_document', args: { width: 600, height: 800, resolution: 300, background: '#0b1a17', name: 'Bottle at dusk' }, stage: 'Canvas', note: '300 ppi RGB canvas' },
+            {
+              action: 'op.add_gradient_layer',
+              args: { name: 'Night sky', gradient: { stops: [[0, '#06131f'], [55, '#17494b'], [100, '#7e9c79']], style: 'linear', angle: 90 } },
+              stage: 'Canvas',
+              note: 'The sky and the ground glow',
+            },
+            {
+              action: 'op.add_path',
+              args: {
+                name: 'Glass bottle',
+                points: [[300, 120], [238, 180], [226, 330], [252, 620], [348, 620], [374, 330], [362, 180]],
+                closed: true,
+                gradient: { stops: [[0, '#9fe0d5'], [48, '#2f7776'], [100, '#0b3038']], style: 'linear', angle: 80 },
+                stroke: '#9fe0d5',
+                strokeWidth: 3,
+              },
+              stage: 'Bottle',
+              note: 'Pen path with a glass gradient',
+            },
+            { action: 'op.add_shape', args: { kind: 'ellipse', x: 420, y: 110, width: 90, height: 90, fill: '#ffe6a8', opacity: 85, name: 'Moon' }, stage: 'Bottle', note: 'A warm moon' },
+            {
+              action: 'op.paint',
+              args: { name: 'Mist', paths: [[[120, 520], [250, 500], [380, 520], [500, 490]], [[150, 570], [300, 545], [470, 575]]], color: '#d8fff1', size: 80, hardness: 0, opacity: 22, flow: 18, scatter: 0.6, count: 5, seed: 41 },
+              stage: 'Light',
+              note: 'Soft fog across the glass',
+            },
+            { action: 'op.add_adjustment_layer', args: { kind: 'curves', params: { rgb: { points: [[0, 0], [128, 142], [255, 255]] } } }, stage: 'Light', note: 'Lift the midtones' },
+          ],
+        },
+      },
+    ],
+  });
+  await send(page, 'paint a small bottle study');
+  const plan = page.locator('.ast-plan');
+  await expect(plan.locator('.ast-stage')).toHaveCount(3);
+  await expect(plan.locator('.ast-stage').first()).toContainText('Canvas');
+  await expect(plan.locator('.ast-stage').first()).toContainText('300 ppi canvas');
+  await expect(plan.getByRole('button', { name: 'Run by Stage' })).toBeVisible();
+  await plan.getByRole('button', { name: 'Run by Stage' }).click();
+  await expect(plan.locator('.ast-outcome')).toContainText('Paused before the “Bottle” stage');
+  await expect(plan.locator('.ast-step').nth(0)).toHaveClass(/status-done/);
+  await expect(plan.locator('.ast-step').nth(2)).toHaveClass(/status-pending/);
+  await plan.getByRole('button', { name: 'Next Stage' }).click();
+  await expect(plan.locator('.ast-outcome')).toContainText('Paused before the “Light” stage');
+  await plan.getByRole('button', { name: 'Run the Rest' }).click();
+  await expect(plan.locator('.ast-outcome')).toContainText('Done: 6 steps applied');
+  await idle(page);
+  const state = await page.evaluate(() => {
+    const e = window.photoStudio;
+    const layers = e.doc.layers.map((l) => ({ name: l.name, kind: l.kind, blend: l.blend, opacity: l.opacity, vector: l.vector?.fill?.type, stops: l.vector?.fill?.colorStops?.length, adjustment: l.adjustment?.kind }));
+    const paint = e.doc.layers.find((l) => l.name === 'Mist');
+    return { width: e.doc.width, height: e.doc.height, ppi: e.doc.resolution?.horizontalResolution, layers, paint: !!paint?.pixels };
+  });
+  expect(state.width).toBe(600);
+  expect(state.height).toBe(800);
+  expect(state.ppi).toBe(300);
+  expect(state.layers.some((l) => l.name.startsWith('Glass bottle') && l.kind === 'vector' && l.vector === 'solid' && l.stops === 2)).toBe(true);
+  expect(state.layers.some((l) => l.name.startsWith('Moon') && l.kind === 'vector')).toBe(true);
+  expect(state.layers.some((l) => l.name === 'Mist' && l.kind === 'pixel')).toBe(true);
+  expect(state.layers.some((l) => l.kind === 'adjustment' && l.adjustment === 'curves')).toBe(true);
+  const labels = await historyLabels(page);
+  expect(labels.at(-1)).toBe('Assistant: paint a small bottle study');
+  const alpha = await page.evaluate(async () => {
+    const e = window.photoStudio;
+    const l = e.doc.layers.find((x) => x.name === 'Mist');
+    if (!l?.pixels) return -1;
+    const { readRGBA } = await import('/src/model/tiles.ts');
+    return readRGBA(e.assets.tiles, l.pixels, { x: 250, y: 520, width: 1, height: 1 }).data[3];
+  });
+  expect(alpha).toBeGreaterThan(0);
+});
+
+test('the assistant downloads the layered project and a flattened PNG directly', async ({ page }) => {
+  await boot(page, 'default', PUTER);
+  await openAssistant(page);
+  const downloads: Download[] = [];
+  page.on('download', (d) => downloads.push(d));
+  await script(page, {
+    calls: [
+      {
+        name: 'propose_plan',
+        args: {
+          title: 'Poster files',
+          steps: [
+            { action: 'op.new_document', args: { width: 1200, height: 1600, resolution: 300, background: '#101820', name: 'Forest bottle poster' } },
+            { action: 'op.add_gradient_layer', args: { name: 'Sky', gradient: { stops: [[0, '#07131f'], [100, '#4f7462']], angle: 90 } } },
+            { action: 'op.add_shape', args: { kind: 'ellipse', x: 1200, y: 500, width: 600, height: 600, fill: '#f4d58d', name: 'Moon' } },
+            { action: 'op.download_project' },
+            { action: 'op.export', args: { format: 'png', name: 'forest-bottle-poster.png' } },
+          ],
+        },
+      },
+    ],
+  });
+  await send(page, 'make the poster files');
+  const plan = page.locator('.ast-plan');
+  await plan.getByRole('button', { name: 'Run All' }).click();
+  await expect(plan.locator('.ast-outcome')).toContainText('Done: 5 steps applied', { timeout: 90_000 });
+  await expect.poll(() => downloads.length, { timeout: 90_000 }).toBe(2);
+  const files = await Promise.all(
+    downloads.map(async (d) => ({
+      name: d.suggestedFilename(),
+      bytes: await readFile((await d.path())!),
+    })),
+  );
+  const photo = files.find((f) => f.name === 'Forest bottle poster.photo');
+  const png = files.find((f) => f.name === 'forest-bottle-poster.png');
+  expect(photo?.bytes.subarray(0, 8).toString('latin1')).toBe('PHOTO001');
+  expect(png?.bytes.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
+  expect(png?.bytes.readUInt32BE(16)).toBe(1200);
+  expect(png?.bytes.readUInt32BE(20)).toBe(1600);
+  const doc = await page.evaluate(() => [window.photoStudio.doc.width, window.photoStudio.doc.height, window.photoStudio.doc.resolution?.horizontalResolution]);
+  expect(doc).toEqual([1200, 1600, 300]);
+});
+
+test('the assistant groups, masks, clips and makes a Smart Object', async ({ page }) => {
+  await boot(page, 'default', PUTER);
+  await openAssistant(page);
+  await script(page, {
+    calls: [
+      {
+        name: 'propose_plan',
+        args: {
+          title: 'Smart assembly',
+          steps: [
+            { action: 'op.new_document', args: { width: 320, height: 320, resolution: 72, background: 'white', name: 'Assembly' } },
+            { action: 'op.add_shape', args: { kind: 'rect', x: 30, y: 30, width: 120, height: 120, fill: '#c34a3a', name: 'Card' } },
+            { action: 'op.add_shape', args: { kind: 'ellipse', x: 150, y: 150, width: 100, height: 100, fill: '#3a8f72', name: 'Seal' } },
+            { action: 'op.group_layers', args: { layers: 'Card, Seal', name: 'Card and Seal' } },
+            { action: 'op.smart_object', args: { layers: 'Card and Seal' } },
+            { action: 'op.select', args: { x: 165, y: 165, width: 40, height: 40 } },
+            { action: 'layer.mask-reveal-selection' },
+            { action: 'op.add_shape', args: { kind: 'rect', x: 0, y: 0, width: 320, height: 320, fill: '#1c2b33', opacity: 30, name: 'Tint' } },
+            { action: 'layer.clipping-mask' },
+          ],
+        },
+      },
+    ],
+  });
+  await send(page, 'assemble the smart object');
+  const plan = page.locator('.ast-plan');
+  await plan.getByRole('button', { name: 'Run All' }).click();
+  await expect(plan.locator('.ast-outcome')).toContainText('Done: 9 steps applied', { timeout: 90_000 });
+  await idle(page);
+  const state = await page.evaluate(async () => {
+    const e = window.photoStudio;
+    const { hasMask } = await import('/src/model/masks.ts');
+    const smart = e.doc.layers.find((l) => l.kind === 'image');
+    const tint = e.doc.layers.find((l) => l.name === 'Tint');
+    return {
+      names: e.doc.layers.map((l) => l.name),
+      kinds: e.doc.layers.map((l) => l.kind),
+      hasGroup: e.doc.layers.some((l) => l.kind === 'group'),
+      smart: smart ? { kind: smart.kind, masked: hasMask(smart) || !!smart.maskGrid, embedded: !!smart.embed } : null,
+      tint: tint ? { clipped: !!tint.clipped, fill: tint.kind } : null,
+    };
+  });
+  expect(state.hasGroup).toBe(false);
+  expect(state.smart).toMatchObject({ kind: 'image', masked: true, embedded: true });
+  expect(state.tint).toMatchObject({ clipped: true, fill: 'vector' });
 });
 
 test('Generation History shows a result as soon as it is stored', async ({ page }) => {

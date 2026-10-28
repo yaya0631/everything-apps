@@ -42,9 +42,15 @@
 .ast-plan-title strong { overflow-wrap: anywhere; }
 .ast-state { flex: none; font-size: 10.5px; padding: 1px 6px; border-radius: 8px; background: var(--surface); color: var(--muted); }
 .ast-plan > .ast-text, .ast-summary { margin: 0; padding: 0 9px 6px; line-height: 1.45; color: var(--text); }
+.ast-plan > .ast-outcome { padding: 0 9px 6px; }
 .ast-ai-note { display: flex; gap: 6px; align-items: flex-start; margin: 0 9px 6px; padding: 5px 7px; border-radius: 4px; background: var(--surface); line-height: 1.4; font-size: 11px; }
 .ast-ai-note .icon { flex: none; margin-top: 1px; color: var(--accent); }
 .ast-steps { list-style: none; margin: 0; padding: 0 6px 6px; display: flex; flex-direction: column; gap: 4px; }
+.ast-stage { margin: 3px 0 0; padding: 2px 4px 1px; border-bottom: 1px solid var(--line-soft); }
+.ast-stage:first-child { margin-top: 0; }
+.ast-stage-head { display: flex; align-items: center; gap: 5px; font-size: 11px; letter-spacing: 0.02em; color: var(--text); }
+.ast-stage-head .icon { color: var(--accent); }
+.ast-stage-note { margin: 1px 0 4px 18px; font-size: 11px; line-height: 1.4; color: var(--muted); }
 .ast-step { padding: 5px 7px; border-radius: 5px; background: var(--surface); border-left: 3px solid transparent; }
 .ast-step.has-problem { border-left-color: #d9534f; }
 .ast-step.status-done { border-left-color: #3fa66b; }

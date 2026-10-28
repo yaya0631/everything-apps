@@ -30,7 +30,12 @@ import { listAssistantModels } from '../../imaging/ai/puter-ai';
 
 // The step whose settings are being edited.
 let editing: { plan: string; step: string } | undefined;
-const EXAMPLES = ['Make the sky more dramatic and crop to 16:9', 'Remove the background and add a soft drop shadow', 'How do I straighten a crooked photo?'];
+const EXAMPLES = [
+  'Make the sky more dramatic and crop to 16:9',
+  'Remove the background and add a soft drop shadow',
+  'Build a 3000 × 4000 forest bottle poster with a glowing city inside',
+  'How do I straighten a crooked photo?',
+];
 
 /** Light formatting for model text: paragraphs, "- " lists, **bold** and `code`. */
 export function formatText(text: string): string {
@@ -100,15 +105,32 @@ ${detail ? `<div class="ast-step-detail">${escapeXML(detail)}</div>` : ''}${s.no
 ${s.problems.map((p) => `<p class="ast-problem" role="note">${svg('ban', 12)}${escapeXML(p)}</p>`).join('')}${s.notes.map((n) => `<p class="ast-step-hint">${escapeXML(n)}</p>`).join('')}${s.error && s.status === 'failed' ? `<p class="ast-problem">${escapeXML(s.error)}</p>` : ''}
 ${actions}${form}</li>`;
 }
+function stageHTML(p: PlanMessage['plan'], title: string | undefined) {
+  if (!title) return '';
+  const stage = p.stages.find((s) => s.title.toLowerCase() === title.toLowerCase());
+  return `<li class="ast-stage"><div class="ast-stage-head">${svg('layers', 12)}<strong>${escapeXML(title)}</strong></div>${stage?.narration ? `<p class="ast-stage-note">${escapeXML(stage.narration)}</p>` : ''}</li>`;
+}
+function stepsHTML(m: PlanMessage) {
+  let previous: string | undefined;
+  return m.plan.steps
+    .map((s, i) => {
+      const heading = s.stage !== previous ? stageHTML(m.plan, s.stage) : '';
+      previous = s.stage;
+      return heading + stepHTML(m, s, i);
+    })
+    .join('');
+}
 function planHTML(m: PlanMessage) {
   const p = m.plan;
   const problems = p.steps.some((s) => s.problems.length);
+  const stages = p.stages.length > 1;
+  const runLabel = stages ? 'Run in One Go' : 'Run All';
   const state = { ready: '', running: 'Running…', stepping: 'Paused', done: 'Applied', stopped: 'Stopped', failed: 'Failed', discarded: 'Discarded' }[m.state];
   let foot = '';
   if (m.state === 'ready')
-    foot = `<button type="button" class="primary" data-plan-act="run" ${problems || !p.steps.length ? 'disabled' : ''}>${svg('play', 14)}Run All</button><button type="button" data-plan-act="step" ${problems || !p.steps.length ? 'disabled' : ''}>${svg('step-forward', 14)}Step</button><span class="ast-spacer"></span><button type="button" data-plan-act="discard">Discard</button>`;
+    foot = `${stages ? `<button type="button" class="primary" data-plan-act="stage" ${problems || !p.steps.length ? 'disabled' : ''}>${svg('play', 14)}Run by Stage</button>` : ''}<button type="button" class="${stages ? '' : 'primary'}" data-plan-act="run" ${problems || !p.steps.length ? 'disabled' : ''}>${svg('play', 14)}${runLabel}</button><button type="button" data-plan-act="step" ${problems || !p.steps.length ? 'disabled' : ''}>${svg('step-forward', 14)}Step</button><span class="ast-spacer"></span><button type="button" data-plan-act="discard">Discard</button>`;
   else if (m.state === 'stepping')
-    foot = `<button type="button" class="primary" data-plan-act="step">${svg('step-forward', 14)}Next Step</button><button type="button" data-plan-act="run">${svg('play', 14)}Run the Rest</button><span class="ast-spacer"></span><button type="button" data-plan-act="stop">${svg('square', 13)}Stop</button>`;
+    foot = `<button type="button" class="primary" data-plan-act="step">${svg('step-forward', 14)}Next Step</button>${stages ? `<button type="button" data-plan-act="stage">${svg('play', 14)}Next Stage</button>` : ''}<button type="button" data-plan-act="rest">${svg('play', 14)}Run the Rest</button><span class="ast-spacer"></span><button type="button" data-plan-act="stop">${svg('square', 13)}Stop</button>`;
   else if (m.state === 'running') foot = `<span class="ast-running">${m.outcome === 'stopping' ? 'Stopping after this step…' : 'Running…'}</span><span class="ast-spacer"></span><button type="button" data-plan-act="stop">${svg('square', 13)}Stop</button>`;
   else if (m.state !== 'discarded' && m.outcome) foot = `<p class="ast-outcome" role="status">${escapeXML(m.outcome)}</p>`;
   return `<section class="ast-plan state-${m.state}" data-plan="${m.id}" aria-label="Plan: ${escapeXML(p.title)}">
@@ -116,7 +138,8 @@ function planHTML(m: PlanMessage) {
 ${m.text ? `<div class="ast-text">${formatText(m.text)}</div>` : ''}${p.summary ? `<p class="ast-summary">${escapeXML(p.summary)}</p>` : ''}
 ${usesAI(p) && m.state === 'ready' ? `<p class="ast-ai-note">${svg('sparkles', 13)}Steps marked “AI credits” open their dialog with the prompt filled in. Nothing is generated or charged until you press Generate there.</p>` : ''}
 ${problems && m.state === 'ready' ? `<p class="ast-ai-note">${svg('ban', 13)}Some steps have problems. Edit or remove them to run the plan.</p>` : ''}
-<ol class="ast-steps">${p.steps.map((s, i) => stepHTML(m, s, i)).join('')}</ol>
+${m.state === 'stepping' && m.outcome ? `<p class="ast-outcome" role="status">${escapeXML(m.outcome)}</p>` : ''}
+<ol class="ast-steps">${stepsHTML(m)}</ol>
 ${m.state === 'discarded' ? '' : `<footer class="ast-plan-foot">${foot}</footer>`}</section>`;
 }
 function messageHTML(m: Message) {
@@ -134,7 +157,7 @@ function renderLog(e: Editor, el: HTMLElement) {
   const c = conversation(e);
   const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
   const count = c.messages.length;
-  const intro = `<div class="ast-intro">${svg('assistant', 28)}<p><strong>Describe an edit</strong> and the Assistant plans it with Photo Studio’s own commands. You review the steps, change them if you like, and run them as one undo step. You can also ask how to do something.</p><div class="ast-examples" role="group" aria-label="Examples">${EXAMPLES.map((x) => `<button type="button" data-example="${escapeXML(x)}">${escapeXML(x)}</button>`).join('')}</div></div>`;
+  const intro = `<div class="ast-intro">${svg('assistant', 28)}<p><strong>Describe an edit</strong> and the Assistant plans it with Photo Studio's own commands. You review the stages and steps, change them if you like, and run them as one undo step, one stage at a time or one step at a time. You can also ask how to do something.</p><div class="ast-examples" role="group" aria-label="Examples">${EXAMPLES.map((x) => `<button type="button" data-example="${escapeXML(x)}">${escapeXML(x)}</button>`).join('')}</div></div>`;
   const pending = c.pending ? `<div class="ast-pending" role="status"><span class="ast-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>${escapeXML(c.pending.status)}</span><button type="button" data-cancel>Stop</button></div>` : '';
   const scroll = log.scrollTop;
   log.innerHTML = (count ? c.messages.map(messageHTML).join('') : intro) + pending;
@@ -260,9 +283,9 @@ export function mountAssistant(e: Editor, el: HTMLElement) {
     const m = planEl ? findPlan(e, planEl.dataset.plan!) : undefined;
     if (!m) return;
     const planAct = t.closest<HTMLElement>('[data-plan-act]')?.dataset.planAct;
-    if (planAct === 'run' || planAct === 'step') {
+    if (planAct === 'run' || planAct === 'step' || planAct === 'stage' || planAct === 'rest') {
       editing = undefined;
-      return void runPlan(e, m, planAct === 'run' ? 'all' : 'step');
+      return void runPlan(e, m, planAct === 'step' ? 'step' : planAct === 'stage' ? 'stage' : planAct === 'rest' ? 'rest' : 'all');
     }
     if (planAct === 'stop') return stopPlan(e, m);
     if (planAct === 'discard') return discardPlan(m);

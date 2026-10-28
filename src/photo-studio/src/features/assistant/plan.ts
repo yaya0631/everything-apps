@@ -9,9 +9,11 @@ import { AI_COMMANDS, blockedCommand, type CatalogEntry, type InputKind } from '
 import { opById, type SelectionEffect } from './ops';
 import { coerceArgs, compactJSON, summarizeArgs, type Param } from './params';
 
-export type RawStep = { action?: unknown; args?: unknown; note?: unknown };
-export type RawPlan = { title?: unknown; summary?: unknown; steps?: unknown };
+export type RawStep = { action?: unknown; args?: unknown; note?: unknown; stage?: unknown };
+export type RawStage = { title?: unknown; narration?: unknown };
+export type RawPlan = { title?: unknown; summary?: unknown; stages?: unknown; steps?: unknown };
 export type StepStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped';
+export type Stage = { title: string; narration?: string };
 export type Step = {
   key: string;
   // The command or operation ID as resolved (empty when unknown).
@@ -21,6 +23,8 @@ export type Step = {
   kind: 'command' | 'op' | 'unknown';
   label: string;
   note?: string;
+  // The stage this step belongs to, when the plan is narrated in stages.
+  stage?: string;
   input: InputKind;
   args: Record<string, unknown>;
   params?: Param[];
@@ -29,7 +33,7 @@ export type Step = {
   status: StepStatus;
   error?: string;
 };
-export type Plan = { id: string; request: string; title: string; summary: string; steps: Step[] };
+export type Plan = { id: string; request: string; title: string; summary: string; stages: Stage[]; steps: Step[] };
 
 export type CommandInfo = { id: string; label: string; hidden?: boolean };
 export interface PlanEnv {
@@ -45,7 +49,7 @@ export interface PlanEnv {
   hasSelection: boolean;
 }
 
-export const MAX_STEPS = 30;
+export const MAX_STEPS = 120;
 // Selection effects of commands, for checking a plan before it runs.
 const CREATES_SELECTION = new Set(['select.all', 'select.subject', 'select.sky', 'select.color-range', 'select.focus-area', 'select.reselect', 'select.load', 'select.grow', 'select.similar', 'select.mask-refine', 'path.load-selection']);
 const CLEARS_SELECTION = new Set(['select.deselect', 'image.crop', 'edit.generate-image', 'edit.edit-with-prompt', 'edit.ai-fill', 'edit.ai-expand', 'layer.mask-reveal-selection', 'layer.mask-hide-selection', 'image.canvas-size', 'image.image-size', 'image.trim']);
@@ -59,16 +63,46 @@ const nextKey = () => `s${++counter}`;
 export function buildPlan(raw: RawPlan, request: string, env: PlanEnv): Plan {
   const list = Array.isArray(raw.steps) ? (raw.steps as RawStep[]) : [];
   const steps: Step[] = list.slice(0, MAX_STEPS).map((s) => makeStep(s, env));
+  const stages = buildStages(raw.stages, steps);
+  const stageNames = new Map(stages.map((s) => [s.title.toLowerCase(), s.title]));
+  for (const step of steps) if (step.stage) step.stage = stageNames.get(step.stage.toLowerCase()) ?? step.stage;
   const plan: Plan = {
     id: crypto.randomUUID(),
     request,
     title: typeof raw.title === 'string' && raw.title.trim() ? raw.title.trim().slice(0, 120) : request.slice(0, 120),
     summary: typeof raw.summary === 'string' ? raw.summary.trim().slice(0, 1200) : '',
+    stages,
     steps,
   };
   if (list.length > MAX_STEPS && steps.length) steps[steps.length - 1].notes.push(`The plan had ${list.length} steps; only the first ${MAX_STEPS} are kept.`);
   validatePlan(plan, env);
   return plan;
+}
+
+/** Stage headings in the order they are defined or first used by a step. */
+function buildStages(raw: unknown, steps: Step[]): Stage[] {
+  const stages: Stage[] = [];
+  const add = (title: string, narration?: string) => {
+    const t = title.trim().slice(0, 120);
+    if (!t) return;
+    const found = stages.find((s) => s.title.toLowerCase() === t.toLowerCase());
+    if (found) {
+      if (!found.narration && narration?.trim()) found.narration = narration.trim().slice(0, 500);
+      return;
+    }
+    stages.push({ title: t, ...(narration?.trim() ? { narration: narration.trim().slice(0, 500) } : {}) });
+  };
+  if (Array.isArray(raw)) {
+    for (const item of raw.slice(0, 40)) {
+      if (typeof item === 'string') add(item);
+      else if (item && typeof item === 'object') {
+        const o = item as RawStage;
+        if (typeof o.title === 'string') add(o.title, typeof o.narration === 'string' ? o.narration : undefined);
+      }
+    }
+  }
+  for (const step of steps) if (step.stage) add(step.stage);
+  return stages;
 }
 
 /** Resolve what a step names: an ID, a panel, or a command label. */
@@ -100,6 +134,7 @@ function makeStep(raw: RawStep, env: PlanEnv): Step {
     kind: r.kind,
     label: r.kind === 'op' ? opById.get(r.id)!.label : r.kind === 'command' ? env.command(r.id)!.label.replace(/…$/, '') : asked || 'Unknown step',
     note: typeof raw.note === 'string' && raw.note.trim() ? raw.note.trim().slice(0, 300) : undefined,
+    ...(typeof raw.stage === 'string' && raw.stage.trim() ? { stage: raw.stage.trim().slice(0, 120) } : {}),
     input: r.kind === 'op' ? 'op' : (env.entry(r.id)?.input ?? 'none'),
     args: {},
     notes: r.note ? [r.note] : [],
@@ -148,17 +183,20 @@ export function setArgs(step: Step, raw: unknown, env: PlanEnv) {
 /** Check every step in order (selection and document state carried along). */
 export function validatePlan(plan: Plan, env: PlanEnv) {
   let hasSelection = env.hasSelection;
+  let hasDocument = env.hasDocument;
   for (const step of plan.steps) {
     step.problems = step.problems.filter((p) => !p.includes('needs a selection') && !p.startsWith('Open or create a document') && !p.startsWith('The Assistant does not run'));
     if (step.kind === 'unknown') continue;
     if (step.kind === 'command' && blockedCommand(step.action)) step.problems.push(`The Assistant does not run “${step.label}”.`);
-    if (!env.hasDocument && !NO_DOCUMENT(step.action)) step.problems.push('Open or create a document first.');
+    const opens = step.kind === 'op' && opById.get(step.action)?.document === 'creates';
+    if (!hasDocument && !opens && !NO_DOCUMENT(step.action)) step.problems.push('Open or create a document first.');
     const effect = selectionEffect(step, env);
     if (effect === 'needs' && !hasSelection) step.problems.push(`“${step.label}” needs a selection, and there is none at this point. Add a step that selects an area first.`);
     // A command can need a selection and then clear it (AI Fill, masking from
     // the selection): the steps after it have none.
     if (effect === 'creates') hasSelection = true;
     else if (effect === 'clears' || clearsSelection(step) || (step.action === 'op.add_adjustment_layer' && hasSelection)) hasSelection = false;
+    if (opens) hasDocument = true;
   }
 }
 const clearsSelection = (step: Pick<Step, 'kind' | 'action'>) => step.kind === 'command' && CLEARS_SELECTION.has(step.action);
@@ -197,6 +235,7 @@ export function stepDetail(step: Step): string {
 
 /** Plain-text account of a plan for the conversation sent to the model. */
 export function planTranscript(plan: Plan, outcome: string): string {
-  const lines = plan.steps.map((s, i) => `${i + 1}. ${s.label}${stepDetail(s) ? ` (${stepDetail(s)})` : ''} [${s.status}${s.error ? `: ${s.error}` : ''}]`);
+  const stageName = (s: Step) => (s.stage ? `[${s.stage}] ` : '');
+  const lines = plan.steps.map((s, i) => `${i + 1}. ${stageName(s)}${s.label}${stepDetail(s) ? ` (${stepDetail(s)})` : ''} [${s.status}${s.error ? `: ${s.error}` : ''}]`);
   return `Proposed plan “${plan.title}”:\n${lines.join('\n')}\nOutcome: ${outcome}`;
 }
