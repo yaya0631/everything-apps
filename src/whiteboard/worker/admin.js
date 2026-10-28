@@ -1019,6 +1019,7 @@ async function aiRequest(org, identity, input, boards) {
     handwriting: "handwriting",
     generate: "summaries",
     describe: "summaries",
+    agent: "summaries",
   }[task];
   if (!feature) fail(400, "Unknown AI task.");
   if (!policy.ai.enabled || !policy.ai[feature])

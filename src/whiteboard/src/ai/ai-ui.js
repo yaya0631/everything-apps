@@ -7,6 +7,13 @@ import {
 } from "../facilitation/authored-field.js";
 import { authoredTextHTML } from "../accessibility/object-content.js";
 import { imageLayout } from "../image-crop.js";
+import {
+  AGENT_ROUNDS,
+  AGENT_TOOLS,
+  boardInfo,
+  executeBoardTool,
+  parseAgentReply,
+} from "./agent.js";
 
 // AI assistance: summaries, grouping sticky notes into themes, turning a photo
 // of handwritten notes into digital sticky notes, and generating ideas.
@@ -376,6 +383,7 @@ export function createAI({
       describe: "summaries",
       cluster: "clustering",
       handwriting: "handwriting",
+      agent: "summaries",
     }[task];
     const blocked = availability(feature);
     if (blocked) throw Error(t(blocked));
@@ -458,7 +466,7 @@ export function createAI({
         selectedCount = selected.size;
       return modal(
         "AI assistant",
-        `<p class="dialog-copy">${t(org.info?.role && org.info.role !== "guest" ? "Requests go through your organization, which controls these features and records their use in the audit log." : "Requests use Puter AI with your Puter account. Board content you choose is sent to the AI model.")}</p>${blocked ? `<p class="dialog-copy" role="alert">${t(blocked)}</p>` : ""}<div class="ai-actions"><button class="secondary" data-ai="summarize" ${blocked ? "disabled" : ""}>${icon("text-quote")}<span><strong>${t("Summarize")}</strong><small>${t(selectedCount ? "The selected objects" : "The whole board")}</small></span></button><button class="secondary" data-ai="themes" ${blocked || selectedCount < 2 ? "disabled" : ""}>${icon("group")}<span><strong>${t("Group into themes")}</strong><small>${t("Select two or more sticky notes")}</small></span></button><button class="secondary" data-ai="handwriting" ${blocked ? "disabled" : ""}>${icon("scan-text")}<span><strong>${t("Photo to sticky notes")}</strong><small>${t("Turn handwritten notes into digital ones")}</small></span></button><button class="secondary" data-ai="generate" ${blocked ? "disabled" : ""}>${icon("sparkles")}<span><strong>${t("Generate ideas")}</strong><small>${t("Sticky notes from a prompt")}</small></span></button></div>${org.info?.role ? "" : `<label class="check-field"><input type="checkbox" id="ai-enabled" ${personalAIEnabled() ? "checked" : ""}><span>${t("Allow AI features on this device")}</span></label>`}<div id="ai-work"></div><p id="ai-status" role="status" aria-live="polite"></p>`,
+        `<p class="dialog-copy">${t(org.info?.role && org.info.role !== "guest" ? "Requests go through your organization, which controls these features and records their use in the audit log." : "Requests use Puter AI with your Puter account. Board content you choose is sent to the AI model.")}</p>${blocked ? `<p class="dialog-copy" role="alert">${t(blocked)}</p>` : ""}<div class="ai-actions"><button class="secondary" data-ai="summarize" ${blocked ? "disabled" : ""}>${icon("text-quote")}<span><strong>${t("Summarize")}</strong><small>${t(selectedCount ? "The selected objects" : "The whole board")}</small></span></button><button class="secondary" data-ai="themes" ${blocked || selectedCount < 2 ? "disabled" : ""}>${icon("group")}<span><strong>${t("Group into themes")}</strong><small>${t("Select two or more sticky notes")}</small></span></button><button class="secondary" data-ai="handwriting" ${blocked ? "disabled" : ""}>${icon("scan-text")}<span><strong>${t("Photo to sticky notes")}</strong><small>${t("Turn handwritten notes into digital ones")}</small></span></button><button class="secondary" data-ai="generate" ${blocked ? "disabled" : ""}>${icon("sparkles")}<span><strong>${t("Generate ideas")}</strong><small>${t("Sticky notes from a prompt")}</small></span></button><button class="secondary" data-ai="agent" ${blocked ? "disabled" : ""}>${icon("sparkles")}<span><strong>${t("Build or edit with AI")}</strong><small>${t("Describe a multi-step change")}</small></span></button></div>${org.info?.role ? "" : `<label class="check-field"><input type="checkbox" id="ai-enabled" ${personalAIEnabled() ? "checked" : ""}><span>${t("Allow AI features on this device")}</span></label>`}<div id="ai-work"></div><p id="ai-status" role="status" aria-live="polite"></p>`,
         (d) => {
           watchDialog(d);
           // Keep the scope promised by the action, even if remote changes
@@ -795,6 +803,108 @@ export function createAI({
       };
       refresh();
     },
+    async agent(d) {
+      if (!onBoard(d) || d.dataset.aiBusy) return;
+      if (typeof canEdit !== "function" || !canEdit(new Set())) return;
+      const work = replaceWork(
+        d,
+        `<form id="ai-agent"><label class="field">${t("What should the AI do?")}<textarea id="ai-agent-prompt" rows="5" required maxlength="4000" placeholder="${t("For example: add a column of risks, group the launch notes into frames, and put a summary at the top.")}"></textarea></label><div class="dialog-footer"><button class="primary">${t("Start")}</button></div></form>`,
+      );
+      if (!work) return;
+      const form = work.querySelector("#ai-agent"),
+        prompt = work.querySelector("#ai-agent-prompt");
+      prompt.focus();
+      form.onsubmit = async (e) => {
+        e.preventDefault();
+        await exclusive(d, async () => {
+          const requestText = prompt.value.trim();
+          if (!requestText) return;
+          const authoringLanguage = language,
+            b = board(),
+            info = boardInfo({
+              board: b,
+              view: view(),
+              selection,
+            }),
+            selectedIds = [...selection()].slice(0, 100),
+            ctx = {
+              board: () => board(),
+              view: () => view(),
+              selection: () => selection(),
+              language: authoringLanguage,
+              center,
+              mutate,
+              select,
+              canEdit,
+            };
+          const writeTools = new Set([
+            "add_notes",
+            "update_objects",
+            "delete_objects",
+            "create_frame",
+            "arrange_grid",
+          ]);
+          let wrote = 0,
+            final = "",
+            conversation = `You are the whiteboard agent. Help the person change this collaborative whiteboard by calling tools, one JSON object per reply. Board title: "${b.title}". Write board text in ${languageName(authoringLanguage)}. Board summary: ${JSON.stringify(info)}. Selected object ids: ${JSON.stringify(selectedIds)}.\n\n${AGENT_TOOLS}\n\nRules: inspect before changing; use only ids returned by the tools; never invent ids; do not change locked content; work in small batches; re-read after a write when the next step depends on it; do not delete unless the request asks. Reply with exactly one JSON object and no Markdown or commentary. When the work is done call finish with a short message. Up to ${AGENT_ROUNDS} tool turns are allowed.\n\nRequest from the person: ${requestText}`;
+          try {
+            for (let round = 0; round < AGENT_ROUNDS; round++) {
+              progress(
+                d,
+                round
+                  ? `Working (${round + 1} of ${AGENT_ROUNDS})…`
+                  : "Planning…",
+              );
+              const reply = await ask("agent", conversation);
+              if (closed.has(d) || !form.isConnected || !onBoard(d)) return;
+              const parsed = parseAgentReply(reply);
+              if (parsed.tool === "finish") {
+                final = String(parsed.args.message || "").trim() || "Done.";
+                break;
+              }
+              progress(d, `Working: ${parsed.tool.replaceAll("_", " ")}…`);
+              const outcome = executeBoardTool(parsed.tool, parsed.args, ctx);
+              if (outcome.ok) {
+                if (writeTools.has(parsed.tool)) wrote++;
+                conversation += `\n\nTool ${parsed.tool} result: ${promptText(
+                  JSON.stringify(outcome.result),
+                  6000,
+                )}`;
+              } else {
+                conversation += `\n\nTool ${parsed.tool} failed: ${promptText(
+                  String(outcome.error || "unknown error"),
+                  1000,
+                )}. Correct it and try again.`;
+              }
+              conversation += "\nReply with the next JSON object only.";
+            }
+            refresh();
+            if (!final)
+              final = wrote
+                ? "Stopped after the tool-turn limit. The work so far is on the board; ask again to continue."
+                : "No board changes were made.";
+            const done = replaceWork(
+              d,
+              `<div class="field"><span id="ai-agent-label">${t("Result")}</span><p id="ai-agent-result"></p></div>`,
+            );
+            if (done)
+              done.querySelector("#ai-agent-result").textContent = `${final}${
+                wrote
+                  ? `\n\n${plural(
+                      wrote,
+                      "{count} tool step changed the board.",
+                      "{count} tool steps changed the board.",
+                    )} Undo takes back the last change.`
+                  : ""
+              }`;
+            progress(d, "Ready. Review the board.");
+          } catch (error) {
+            progress(d, error.message);
+          }
+        });
+      };
+      refresh();
+    },
     review(d, notes, message, authoringLanguage) {
       const work = replaceWork(
         d,
@@ -901,6 +1011,23 @@ addTranslations({
   "Turn handwritten notes into digital ones": "Numériser des notes manuscrites",
   "Generate ideas": "Générer des idées",
   "Sticky notes from a prompt": "Notes adhésives à partir d’une consigne",
+  "Build or edit with AI": "Construire ou modifier avec l’IA",
+  "Describe a multi-step change":
+    "Décrivez une modification en plusieurs étapes",
+  "What should the AI do?": "Que doit faire l’IA?",
+  "For example: add a column of risks, group the launch notes into frames, and put a summary at the top.":
+    "Par exemple : ajoutez une colonne de risques, regroupez les notes de lancement dans des cadres et placez un résumé en haut.",
+  Start: "Commencer",
+  "Planning…": "Planification…",
+  Result: "Résultat",
+  "No board changes were made.":
+    "Aucune modification n’a été apportée au tableau.",
+  "Stopped after the tool-turn limit. The work so far is on the board; ask again to continue.":
+    "Arrêt après la limite d’étapes. Le travail effectué est sur le tableau ; relancez pour continuer.",
+  "Ready. Review the board.": "Prêt. Examinez le tableau.",
+  "{count} tool step changed the board.": "{count} étape a modifié le tableau.",
+  "{count} tool steps changed the board.":
+    "{count} étapes ont modifié le tableau.",
   "Allow AI features on this device":
     "Autoriser les fonctions d’IA sur cet appareil",
   "There is no text to summarize.": "Il n’y a aucun texte à résumer.",
