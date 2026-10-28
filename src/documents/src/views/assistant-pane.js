@@ -13,7 +13,8 @@ import { el, isComposing, MOD_KEY, shortcutCode } from '../ui/dom.js';
 import { toast } from '../ui/toast.js';
 import * as P from '../lib/puter.js';
 import { aiActionById, askAi, answerParagraphs } from '../lib/ai.js';
-import { assistantPrompt, readReply, assistantError, runAssistant, DOC_TOOLS, SUGGESTIONS, MAX_ASSISTANT_CHARS } from '../lib/assistant.js';
+import { assistantPrompt, readReply, assistantError, runAssistant, DOC_TOOLS, SUGGESTIONS, MAX_ASSISTANT_CHARS, textSource, textStats, readTextRange, findTextMatches } from '../lib/assistant.js';
+import { outlineEntries } from '../engine/outline.js';
 import { sidePane, hint } from './review-ui.js';
 import { commandIconEl } from '../ui/ribbon.js';
 
@@ -119,7 +120,7 @@ export function createAssistantPane({ editor, pkg, error, available = () => P.ca
     await reply(async () => {
       const prompt = assistantPrompt({ request, text: p.text, scope: p.scope, history, tools: true });
       const result = await runAssistant({
-        chat, prompt, model, tools: DOC_TOOLS, maxTokens: 4096,
+        chat, prompt, model, tools: DOC_TOOLS,
         runTool: (name, args) => runDocTool(name, args, p),
       });
       // A reply that used a tool already changed the document: show what it
@@ -162,18 +163,18 @@ export function createAssistantPane({ editor, pkg, error, available = () => P.ca
 
   function answerView(answer, p) {
     const body = el('div.as-answer', {}, ...answer.paragraphs.map(t => el('p', {}, t)));
-    if (answer.applied?.length) return [body, appliedRow()];
+    if (answer.applied?.length) return [body, appliedRow(answer.applied.length)];
     if (answer.kind !== 'text') return [body, actions(answer, p, false)];
     const replacing = p.scope === 'selection' && answer.mode !== 'append';
     const original = replacing ? el('p.as-replaces', {}, `Replaces “${p.text.length > 140 ? `${p.text.slice(0, 140).trim()}…` : p.text}”`) : null;
     return [el('p.as-kind', {}, replacing ? 'Suggested replacement' : 'Suggested text'), body, original, actions(answer, p, true)];
   }
 
-  /** What a tool did, with the one Undo that takes that change back. */
-  function appliedRow() {
+  /** What the tools did, with one Undo that takes back every change in this reply. */
+  function appliedRow(count) {
     const row = el('div.as-actions');
-    const note = el('span.as-applied', { role: 'status' }, 'Changed the document');
-    const undo = el('button.btn.btn-ghost.btn-sm', { type: 'button', onclick: () => { editor()?.undo(); undo.disabled = true; note.textContent = 'Undone'; renderContext(); } }, 'Undo');
+    const note = el('span.as-applied', { role: 'status' }, count > 1 ? `Changed the document (${count} edits)` : 'Changed the document');
+    const undo = el('button.btn.btn-ghost.btn-sm', { type: 'button', onclick: () => { for (let i = 0; i < count; i++) editor()?.undo(); undo.disabled = true; note.textContent = count > 1 ? 'Undone all edits' : 'Undone'; renderContext(); } }, count > 1 ? 'Undo all' : 'Undo');
     row.append(note, undo);
     return row;
   }
@@ -223,23 +224,54 @@ export function createAssistantPane({ editor, pkg, error, available = () => P.ca
   }
 
   /**
-   * The assistant's edit_document tool. Every check happens before the
-   * transaction, so a stale selection or a read-only package changes nothing.
+   * The assistant's tools. Read tools see only the text the person sent:
+   * the live whole document when they chose it, or the captured selection.
+   * edit_document applies each change through the editor as one undo step.
    */
+  function sourceFor(p) {
+    const engine = editor();
+    return p.scope === 'document' ? textSource(engine?.model.text || '', 0) : textSource(p.text, p.start || 0);
+  }
+  function documentInfo(p) {
+    const source = sourceFor(p), engine = editor();
+    const outline = p.scope === 'document' && engine
+      ? outlineEntries(engine.model.paragraphs)
+        .filter((e) => e.start >= source.base && e.end <= source.base + source.text.length)
+        .map(({ start, end, level, text }) => ({ start, end, level, text }))
+      : [];
+    return { scope: p.scope, start: source.base, end: source.base + source.text.length, ...textStats(source.text), outline };
+  }
   function runDocTool(name, args, p) {
+    const engine = editor();
+    if (!engine) return { content: 'Error: the document is not open.' };
+    if (name === 'get_document') return { content: JSON.stringify(documentInfo(p)) };
+    if (name === 'read_range' || name === 'find_text') {
+      try {
+        const source = sourceFor(p);
+        const result = name === 'read_range' ? readTextRange(source, args || {}) : findTextMatches(source, args || {});
+        return { content: JSON.stringify(result) };
+      } catch (e) {
+        return { content: `Error: ${e?.message || e}` };
+      }
+    }
     if (name !== 'edit_document') return { content: `Error: there is no tool called ${name}.` };
     const text = String(args?.text ?? '');
     const mode = String(args?.mode || '');
     if (!text.trim()) return { content: 'Error: no text was given, so nothing was changed.' };
-    const engine = editor();
-    if (!engine) return { content: 'Error: the document is not open.' };
     if (pkg()?.readOnly || engine.readOnly || engine.viewOnly) return { content: 'Error: the document is read-only, so nothing was changed.' };
     if (mode === 'replace_selection') {
       if (p.scope !== 'selection' || p.start === undefined) return { content: 'Error: there is no selection to replace. Nothing was changed.' };
       if (engine.model.text.slice(p.start, p.end) !== p.text) return { content: 'Error: the selected text changed since the message was sent. Nothing was changed.' };
     }
     if (mode === 'replace_document' && p.scope !== 'document') return { content: 'Error: the whole document was not sent, so it was not replaced.' };
-    if (!['replace_selection', 'insert', 'append', 'replace_document'].includes(mode)) return { content: `Error: ${mode || 'no mode'} is not a way to edit the document.` };
+    if (mode === 'replace_range' && p.scope !== 'document') return { content: 'Error: range edits need the whole document to be sent. Nothing was changed.' };
+    if (!['replace_selection', 'insert', 'append', 'replace_range', 'replace_document'].includes(mode)) return { content: `Error: ${mode || 'no mode'} is not a way to edit the document.` };
+    let start, end;
+    if (mode === 'replace_range') {
+      start = Number(args?.start); end = Number(args?.end);
+      const length = engine.model.text.length;
+      if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || end > length) return { content: `Error: the range must be whole offsets from 0 to ${length}. Nothing was changed.` };
+    }
     engine.finishComposition();
     if (engine.session.path !== null) engine.editStory(null);
     const ok = engine.execute(() => {
@@ -247,13 +279,14 @@ export function createAssistantPane({ editor, pkg, error, available = () => P.ca
       if (mode === 'replace_selection') { m.select(p.start, p.end); return m.replace(text); }
       if (mode === 'insert') { const at = p.scope === 'selection' && p.end !== undefined ? p.end : m.range[0]; m.select(at, at); return m.replace(text); }
       if (mode === 'append') { const at = m.text.length; const lead = at && !m.text.endsWith('\n') ? '\n' : ''; m.select(at, at); return m.replace(lead + text); }
+      if (mode === 'replace_range') { m.select(start, end); return m.replace(text); }
       m.select(0, m.text.length);
       return m.replace(text);
     });
     if (!ok) return { content: 'Error: the change could not be made. Nothing was changed.' };
     engine.focus();
     renderContext();
-    return { content: `Changed the document (${mode.replace(/_/g, ' ')}).`, applied: { mode } };
+    return { content: `Changed the document (${mode.replace(/_/g, ' ')}${mode === 'replace_range' ? ` at ${start}-${end}` : ''}).`, applied: { mode } };
   }
 
   function toggle() { if (!available()) return; pane.toggle(); if (pane.isOpen) queueMicrotask(() => input.focus()); }
