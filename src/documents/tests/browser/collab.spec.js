@@ -142,6 +142,64 @@ test('restores a named version from Version History', async ({ page }) => {
   await expect.poll(() => editorText(page), { timeout: 15000 }).toBe('First version.');
 });
 
+test('the Assistant turns Markdown into real document styles', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/mock.html#/new');
+  await expect(page.getByRole('button', { name: 'Bold', exact: true })).toBeEnabled();
+  await text(page).fill('Old text.');
+  await text(page).evaluate(el => { el.focus(); el.setSelectionRange(0, el.value.length); el.dispatchEvent(new Event('select')); });
+  await page.locator('.as-title-button').click();
+  const pane = page.getByRole('complementary', { name: 'Assistant pane' });
+  await pane.getByRole('textbox', { name: 'Message the assistant' }).fill('Write a formatted outline');
+  await pane.getByRole('textbox', { name: 'Message the assistant' }).press('Enter');
+  await expect(pane.getByText('Suggested replacement')).toBeVisible();
+  await pane.getByRole('button', { name: 'Replace Selection' }).click();
+  await expect.poll(() => editorText(page)).toBe('Introduction\nBackground\nThis is bold and italic.\nFirst point\nSecond point');
+  const paragraphs = await page.evaluate(() => {
+    const model = window.__docs.current.view.engine.model;
+    return model.paragraphs.map((p) => ({
+      text: p.runs.map((r) => r.text).join(''),
+      style: model.styles.definitions[p.styleId]?.name || p.styleId || '',
+      bold: p.runs.some((r) => r.bold),
+      italic: p.runs.some((r) => r.italic),
+      list: !!p.list,
+    }));
+  });
+  expect(paragraphs[0]).toMatchObject({ text: 'Introduction', style: 'Heading 1' });
+  expect(paragraphs[1]).toMatchObject({ text: 'Background', style: 'Heading 2' });
+  expect(paragraphs[2]).toMatchObject({ text: 'This is bold and italic.', style: 'Normal', bold: true, italic: true });
+  expect(paragraphs[3]).toMatchObject({ text: 'First point', list: true });
+  await expect(page.locator('.as-applied')).toHaveText('Replaced');
+  expect(await page.evaluate(() => window.__docs.current.view.engine.model.paragraphs.every((p) => !p.runs.map((r) => r.text).join('').startsWith('#')))).toBe(true);
+});
+
+test('the Assistant tool path applies Markdown without a second insert step', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/mock.html#/new');
+  await expect(page.getByRole('button', { name: 'Bold', exact: true })).toBeEnabled();
+  await text(page).fill('Old text.');
+  await text(page).evaluate(el => { el.focus(); el.setSelectionRange(0, el.value.length); el.dispatchEvent(new Event('select')); });
+  await page.locator('.as-title-button').click();
+  const pane = page.getByRole('complementary', { name: 'Assistant pane' });
+  await pane.getByRole('textbox', { name: 'Message the assistant' }).fill('Use the formatted outline with tools');
+  await pane.getByRole('textbox', { name: 'Message the assistant' }).press('Enter');
+  await expect(pane.getByText('Formatted the selection.')).toBeVisible();
+  await expect(pane.locator('.as-applied')).toContainText('Changed the document');
+  await expect.poll(() => editorText(page)).toBe('Introduction\nBackground\nThis is bold and italic.\nFirst point\nSecond point');
+  const styles = await page.evaluate(() => {
+    const model = window.__docs.current.view.engine.model;
+    return model.paragraphs.map((p) => ({
+      text: p.runs.map((r) => r.text).join(''),
+      style: model.styles.definitions[p.styleId]?.name || p.styleId || '',
+      bold: p.runs.some((r) => r.bold),
+      italic: p.runs.some((r) => r.italic),
+    }));
+  });
+  expect(styles[0]).toMatchObject({ text: 'Introduction', style: 'Heading 1' });
+  expect(styles[1]).toMatchObject({ text: 'Background', style: 'Heading 2' });
+  expect(styles[2]).toMatchObject({ text: 'This is bold and italic.', bold: true, italic: true });
+});
+
 test('the Assistant rewrites the selection as one undoable change', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto('/mock.html#/new');

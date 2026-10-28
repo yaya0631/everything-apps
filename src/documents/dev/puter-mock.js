@@ -112,29 +112,54 @@
         return a;
       },
       /** A canned rewrite so the writing assistant can be exercised offline. */
-      async chat(prompt) {
+      async chat(prompt, options = {}) {
         await delay(700);
+        // The tool loop sends a messages array; askAi sends one prompt string.
+        const source = Array.isArray(prompt)
+          ? prompt.map((m) => (typeof m.content === 'string' ? m.content : Array.isArray(m.content) ? m.content.map((part) => typeof part === 'string' ? part : part?.text || '').join('') : '')).join('\n')
+          : String(prompt);
+        // The model's tool call path: one edit_document call, then a summary.
+        if (/formatted outline with tools/.test(source) && Array.isArray(prompt) && options.tools?.length) {
+          if (prompt.some((m) => m.role === 'tool')) {
+            const reply = 'ANSWER:\nFormatted the selection.';
+            return { message: { role: 'assistant', content: reply }, toString: () => reply };
+          }
+          const text = '# Introduction\n\n## Background\n\nThis is **bold** and *italic*.\n\n- First point\n- Second point';
+          return {
+            message: {
+              role: 'assistant',
+              content: '',
+              tool_calls: [{ id: 'mock-edit', type: 'function', function: { name: 'edit_document', arguments: JSON.stringify({ mode: 'replace_selection', text }) } }],
+            },
+            toString: () => '',
+          };
+        }
+        // A formatted draft exercises the Assistant's Markdown-to-Word path.
+        if (/formatted outline/.test(source)) {
+          const reply = 'TEXT:\n# Introduction\n\n## Background\n\nThis is **bold** and *italic*.\n\n- First point\n- Second point';
+          return { message: { role: 'assistant', content: reply }, toString: () => reply };
+        }
         // Smart Lookup asks for a definition and related topics in a fixed format.
-        if (/concise reference assistant/.test(prompt)) {
-          const term = /Term:\n"+\n([\s\S]*?)\n"+/.exec(String(prompt))?.[1] || 'term';
+        if (/concise reference assistant/.test(source)) {
+          const term = /Term:\n"+\n([\s\S]*?)\n"+/.exec(source)?.[1] || 'term';
           const reply = `Definition: ${term} is a sample term explained by the offline mock.\nRelated:\n- ${term} history\n- ${term} examples\n- Related concepts`;
           return { message: { role: 'assistant', content: reply }, toString: () => reply };
         }
         // The Assistant pane: a draft or rewrite comes back as TEXT, anything else as an ANSWER.
-        if (/writing assistant inside a word processor\. Below/.test(prompt)) {
-          const request = /The person asks: (.*)/.exec(String(prompt))?.[1] || '';
+        if (/writing assistant inside a word processor\. Below/.test(source)) {
+          const request = /The person asks: (.*)/.exec(source)?.[1] || '';
           const reply = /draft|write|rewrite|shorten|translate/i.test(request)
             ? `TEXT:\nThis draft was written by the offline assistant for: ${request.replace(/[.?!]+$/, '')}.`
-            : `ANSWER:\nThe offline assistant read ${String(prompt).length} characters and answers: ${request}`;
+            : `ANSWER:\nThe offline assistant read ${source.length} characters and answers: ${request}`;
           return { message: { role: 'assistant', content: reply }, toString: () => reply };
         }
-        const m = /Text:\n"""\n([\s\S]*)\n"""$/.exec(String(prompt));
-        const text = m ? m[1] : String(prompt);
+        const m = /Text:\n"""\n([\s\S]*)\n"""$/.exec(source);
+        const text = m ? m[1] : source;
         // The Review tools ask for JSON: proofreading answers (none here) and numbered translations.
-        const numbered = [...String(prompt).matchAll(/^\[(\d+)\] (.*)$/gm)].map(n => n[2]);
-        const reply = /proofreader inside a word processor/.test(prompt) ? '[]'
-          : /Translate each numbered paragraph/.test(prompt) ? JSON.stringify(numbered.map(t => `[Translated] ${t}`))
-          : /Translate this into/.test(prompt) ? `[Translated] ${text}` : /Continue this text/.test(prompt) ? 'And so the story went on, one careful sentence after another.\n\nIt ended where it had to.' : `${text.replace(/\s+/g, ' ').trim()} (revised)`;
+        const numbered = [...source.matchAll(/^\[(\d+)\] (.*)$/gm)].map(n => n[2]);
+        const reply = /proofreader inside a word processor/.test(source) ? '[]'
+          : /Translate each numbered paragraph/.test(source) ? JSON.stringify(numbered.map(t => `[Translated] ${t}`))
+          : /Translate this into/.test(source) ? `[Translated] ${text}` : /Continue this text/.test(source) ? 'And so the story went on, one careful sentence after another.\n\nIt ended where it had to.' : `${text.replace(/\s+/g, ' ').trim()} (revised)`;
         return { message: { role: 'assistant', content: reply }, toString: () => reply };
       },
     },

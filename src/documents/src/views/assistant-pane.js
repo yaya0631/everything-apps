@@ -21,6 +21,40 @@ import { commandIconEl } from '../ui/ribbon.js';
 const words = text => (String(text).trim().match(/\S+/gu) || []).length;
 const plural = (n, one, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
 
+// Assistant replies are Markdown. Convert headings, bold/italic runs and lists
+// into the editor's own paragraph styles and character formatting before they
+// touch the document, so a draft reads like a Word document rather than a text
+// file full of "#" and "**". The modules load on the first edit, like the
+// editor's own Markdown importer.
+let richTextModules;
+async function formattedText(text) {
+  try {
+    richTextModules ||= Promise.all([
+      import('../lib/markdown-html.js'),
+      import('../engine/clipboard-fragment.js'),
+    ]).then(([markdown, clipboard]) => ({ markdown, clipboard }));
+    const { markdown, clipboard } = await richTextModules;
+    const fragment = clipboard.htmlFragment(markdown.markdownHtml(String(text ?? '')));
+    return fragment ? { fragment, paste: clipboard.pasteFragment } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Replace a range with a formatted fragment; plain text is the fallback. */
+function replaceFormatted(m, text, rich, { start, end, lead = '' } = {}) {
+  if (start !== undefined) m.select(start, end ?? start);
+  if (lead) {
+    const at = m.range[0];
+    if (!m.replace(lead)) return false;
+    m.select(at + lead.length, at + lead.length);
+  }
+  if (rich && rich.paste(m, rich.fragment)) return true;
+  // Conversion is best effort: a fragment that cannot be applied must not cost
+  // the person the reply. The plain-text insert is still an undoable change.
+  return m.replace(text);
+}
+
 export function createAssistantPane({ editor, pkg, error, available = () => P.canUseAi(), chat = (messages, options) => P.aiChat(messages, options) }) {
   let scope = 'selection', history = [], busy = false, stopped = null;
   const pane = sidePane({ title: 'Assistant', label: 'Assistant pane', className: 'as-pane', onOpen: () => { renderContext(); renderEmpty(); fab.setAttribute('aria-expanded', 'true'); titleButton.setAttribute('aria-pressed', 'true'); }, onClose: () => { fab.setAttribute('aria-expanded', 'false'); titleButton.setAttribute('aria-pressed', 'false'); editor()?.focus(); } });
@@ -194,25 +228,27 @@ export function createAssistantPane({ editor, pkg, error, available = () => P.ca
   }
 
   /** Apply a reply as one undoable change, where the person said. */
-  function insert(answer, p, how, row, button) {
+  async function insert(answer, p, how, row, button) {
     const engine = editor(); if (!engine) return;
     engine.finishComposition();
     if (engine.session.path !== null) engine.editStory(null);
+    // Keep the reply's Markdown for the rich-text conversion; paragraphs were
+    // normalized for display and would merge headings into the next line.
+    const text = answer.text || answer.paragraphs.join('\n');
+    const rich = await formattedText(text);
     const model = engine.model;
     if (p.start !== undefined && (how === 'replace' || how === 'below' || how === 'after') && model.text.slice(p.start, p.end) !== p.text) {
       error(new Error('The selected text changed since you asked. Select it again and ask once more.')); return;
     }
-    const text = answer.paragraphs.join('\n');
     const ok = engine.execute(() => {
       const m = engine.model;
-      if (how === 'replace') m.select(p.start, p.end);
-      else if (how === 'below' || how === 'after') {
+      if (how === 'replace') return replaceFormatted(m, text, rich, { start: p.start, end: p.end });
+      if (how === 'below' || how === 'after') {
         // After the selection's last paragraph, as new paragraphs.
         const end = how === 'after' ? p.end : (() => { const at = m.text.indexOf('\n', p.end); return at < 0 ? m.text.length : at; })();
-        m.select(end, end);
-        return m.replace(how === 'after' ? ` ${text}` : `\n${text}`);
+        return replaceFormatted(m, text, rich, { start: end, end, lead: how === 'after' ? ' ' : '\n' });
       }
-      return m.replace(text);
+      return replaceFormatted(m, text, rich);
     });
     if (!ok) return;
     engine.focus();
@@ -241,7 +277,7 @@ export function createAssistantPane({ editor, pkg, error, available = () => P.ca
       : [];
     return { scope: p.scope, start: source.base, end: source.base + source.text.length, ...textStats(source.text), outline };
   }
-  function runDocTool(name, args, p) {
+  async function runDocTool(name, args, p) {
     const engine = editor();
     if (!engine) return { content: 'Error: the document is not open.' };
     if (name === 'get_document') return { content: JSON.stringify(documentInfo(p)) };
@@ -272,16 +308,25 @@ export function createAssistantPane({ editor, pkg, error, available = () => P.ca
       const length = engine.model.text.length;
       if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || end > length) return { content: `Error: the range must be whole offsets from 0 to ${length}. Nothing was changed.` };
     }
+    const rich = await formattedText(text);
+    // The model may have taken a moment; do not replace a selection that
+    // changed while it was thinking.
+    if (mode === 'replace_selection' && engine.model.text.slice(p.start, p.end) !== p.text) return { content: 'Error: the selected text changed while the assistant was working. Nothing was changed.' };
     engine.finishComposition();
     if (engine.session.path !== null) engine.editStory(null);
     const ok = engine.execute(() => {
       const m = engine.model;
-      if (mode === 'replace_selection') { m.select(p.start, p.end); return m.replace(text); }
-      if (mode === 'insert') { const at = p.scope === 'selection' && p.end !== undefined ? p.end : m.range[0]; m.select(at, at); return m.replace(text); }
-      if (mode === 'append') { const at = m.text.length; const lead = at && !m.text.endsWith('\n') ? '\n' : ''; m.select(at, at); return m.replace(lead + text); }
-      if (mode === 'replace_range') { m.select(start, end); return m.replace(text); }
-      m.select(0, m.text.length);
-      return m.replace(text);
+      if (mode === 'replace_selection') return replaceFormatted(m, text, rich, { start: p.start, end: p.end });
+      if (mode === 'insert') {
+        const at = p.scope === 'selection' && p.end !== undefined ? p.end : m.range[0];
+        return replaceFormatted(m, text, rich, { start: at, end: at });
+      }
+      if (mode === 'append') {
+        const at = m.text.length;
+        return replaceFormatted(m, text, rich, { start: at, end: at, lead: at && !m.text.endsWith('\n') ? '\n' : '' });
+      }
+      if (mode === 'replace_range') return replaceFormatted(m, text, rich, { start, end });
+      return replaceFormatted(m, text, rich, { start: 0, end: m.text.length });
     });
     if (!ok) return { content: 'Error: the change could not be made. Nothing was changed.' };
     engine.focus();

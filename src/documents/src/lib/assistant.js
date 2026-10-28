@@ -23,7 +23,7 @@ export const DOC_TOOLS = [{
     parameters: {
       type: 'object',
       properties: {
-        text: { type: 'string', description: 'The text to put in the document: paragraphs separated by blank lines, "- " before list items, no Markdown or quotation marks around it.' },
+        text: { type: 'string', description: 'The finished text in Markdown: use #, ## and ### for real headings, **bold** and *italic* for emphasis, "- " for bullets, "1. " for numbered lists and blank lines between paragraphs. The editor applies them as Word styles. Do not wrap the whole reply in a code fence or quotation marks.' },
         mode: { type: 'string', enum: ['replace_selection', 'insert', 'append', 'replace_range', 'replace_document'], description: 'Where the text goes.' },
         start: { type: 'integer', description: 'With replace_range: the UTF-16 offset where the replaced text starts, as returned by the read tools.' },
         end: { type: 'integer', description: 'With replace_range: the UTF-16 offset where the replaced text ends (exclusive).' },
@@ -143,8 +143,8 @@ export function assistantPrompt({ request, text, scope, history = [], tools = fa
     earlier ? `The conversation so far:\n${earlier}` : '',
     `The person asks: ${request}`,
     tools
-      ? 'When they ask you to write, rewrite, draft, translate, shorten, fix or add text for the document, call the edit_document tool with the finished text and the right mode. Use get_document, read_range and find_text to inspect what you were sent and to check your work; never guess at text you have not read. For a long document, read and edit in sections with replace_range, then read the changed range again. Do the work with the tools, then reply with one short sentence about what you changed; do not repeat the text in the chat. For a question about the text, an opinion or an explanation, answer with the line "ANSWER:" and a short answer in plain sentences. Use the language of the request.'
-      : 'If they ask you to write, rewrite, draft, translate or shorten text for the document, reply with the line "TEXT:" and then the text alone: paragraphs separated by blank lines, "- " at the start of list items, no other Markdown, no preamble and no quotation marks around it. Otherwise (a question about the text, an opinion, an explanation) reply with the line "ANSWER:" and then a short answer in plain sentences. Use the language of the request.',
+      ? 'When they ask you to write, rewrite, draft, translate, shorten, fix or add text for the document, call the edit_document tool with the finished text and the right mode. Format it as Markdown: #, ## and ### for headings and subheadings, **bold** and *italic* for emphasis, - for bullets, and blank lines between paragraphs. The editor turns these into real Word heading styles and character formatting. Use get_document, read_range and find_text to inspect what you were sent and to check your work; never guess at text you have not read. For a long document, read and edit in sections with replace_range, then read the changed range again. Do the work with the tools, then reply with one short sentence about what you changed; do not repeat the text in the chat. For a question about the text, an opinion or an explanation, answer with the line "ANSWER:" and a short answer in plain sentences. Use the language of the request.'
+      : 'If they ask you to write, rewrite, draft, translate or shorten text for the document, reply with the line "TEXT:" and then the text alone as Markdown: #, ## and ### for headings, **bold** and *italic* for emphasis, - for bullets, and blank lines between paragraphs. Do not use a code fence, a preamble or quotation marks around it. Otherwise (a question about the text, an opinion, an explanation) reply with the line "ANSWER:" and then a short answer in plain sentences. Use the language of the request.',
   ].filter(Boolean).join('\n\n');
 }
 
