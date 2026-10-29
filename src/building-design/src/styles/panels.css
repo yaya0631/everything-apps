@@ -754,3 +754,234 @@ button.type-sel:hover:not(:disabled) {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* Assistant ------------------------------------------------------------------ */
+
+.assistant {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  font-size: var(--fs-sm);
+}
+
+.assistant-toolbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.assistant-model {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  font-size: var(--fs-sm);
+}
+
+.assistant-context {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-app);
+}
+
+.assistant-context > .icon {
+  flex: none;
+  margin-top: 1px;
+  color: var(--accent-text);
+}
+
+.assistant-context-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.assistant-project {
+  overflow: hidden;
+  font-size: var(--fs-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assistant-context-line {
+  color: var(--fg-muted);
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.assistant-log {
+  flex: 1;
+  min-height: 80px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  outline: none;
+}
+
+.assistant-log:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.assistant-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 2px;
+  color: var(--fg-muted);
+  line-height: 1.45;
+}
+
+.assistant-empty p {
+  margin: 0;
+}
+
+.assistant-empty-mark {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--r-md);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.assistant-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-width: 100%;
+}
+
+.assistant-msg.user {
+  align-items: flex-end;
+}
+
+.assistant-who {
+  padding: 0 2px;
+  color: var(--fg-faint);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.assistant-text {
+  max-width: 100%;
+  padding: 7px 9px;
+  border-radius: var(--r-md);
+  background: var(--bg-group);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.assistant-text p {
+  margin: 0 0 6px;
+}
+
+.assistant-text p:last-child {
+  margin-bottom: 0;
+}
+
+.assistant-text ul,
+.assistant-text ol {
+  margin: 0 0 6px;
+  padding-left: 18px;
+}
+
+.assistant-text code {
+  padding: 0 3px;
+  border-radius: 3px;
+  background: var(--bg-input);
+  font-size: 0.92em;
+}
+
+.assistant-msg.user .assistant-text {
+  background: var(--accent-soft);
+}
+
+.assistant-msg.note .assistant-text {
+  border: 1px dashed var(--border);
+  background: transparent;
+  color: var(--fg-muted);
+}
+
+.assistant-msg.error .assistant-text {
+  border: 1px solid var(--danger);
+  background: transparent;
+  color: var(--danger);
+}
+
+.assistant-thinking {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+.assistant-suggestions {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 0 10px 8px;
+}
+
+.assistant-chip {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-panel);
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1.3;
+  text-align: left;
+}
+
+.assistant-chip:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.assistant-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.assistant-composer {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-panel);
+}
+
+.assistant-input {
+  width: 100%;
+  min-height: 34px;
+  max-height: 120px;
+  resize: none;
+  font: inherit;
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+}
+
+.assistant-composer-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}

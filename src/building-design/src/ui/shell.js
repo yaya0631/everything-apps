@@ -27,6 +27,12 @@ export function buildShell(app) {
     h('kbd', `${MOD} K`),
   );
   const themeBtn = h('button.icon-btn', { type: 'button', 'aria-label': 'Theme', 'aria-haspopup': 'menu', 'data-tip': 'Theme', onClick: (e) => app.themeMenu(e.currentTarget) }, icon('monitor', 17));
+  const assistantBtn = h(
+    'button.btn.sm.assistant-btn',
+    { type: 'button', 'aria-label': 'Assistant', 'aria-pressed': 'false', 'data-tip': 'AI assistant', onClick: () => app.togglePane('assistant') },
+    icon('sparkles', 15),
+    h('span.hide-phone', 'Assistant'),
+  );
   const helpBtn = h('button.icon-btn.hide-phone', { type: 'button', 'aria-label': 'Help', 'data-tip': 'Help', 'data-tip-keys': 'F1', onClick: () => app.run('help') }, icon('help', 17));
   const code = h('a.icon-btn.hide-phone', { href: REPO_URL, target: '_blank', rel: 'noopener noreferrer', 'aria-label': 'Source code (opens in a new tab)', 'data-tip': 'Source code' }, icon('code', 17));
   const account = h('div.account');
@@ -46,7 +52,7 @@ export function buildShell(app) {
       ),
     ),
     title,
-    h('div.tb-right', search, themeBtn, helpBtn, code, account),
+    h('div.tb-right', search, assistantBtn, themeBtn, helpBtn, code, account),
   );
 
   const optionsbar = h('div.optionsbar', { role: 'toolbar', 'aria-label': 'Options' });
@@ -56,13 +62,29 @@ export function buildShell(app) {
   const propsClose = h('button.icon-btn.sm', { type: 'button', 'aria-label': 'Hide Properties', 'data-tip': 'Hide Properties', onClick: () => app.togglePane('props') }, icon('x', 15));
   const propsBody = h('div.pane-body');
   const paneProps = h('section.pane.pane-props', { 'aria-labelledby': 'props-title' }, h('div.pane-head', propsTitle, propsClose), propsBody);
-  const browserTitle = h('h2.pane-title', { id: 'browser-title' }, 'Project Browser');
-  const browserClose = h('button.icon-btn.sm', { type: 'button', 'aria-label': 'Hide Project Browser', 'data-tip': 'Hide Project Browser', onClick: () => app.togglePane('browser') }, icon('x', 15));
+
+  const browserTitle = h('h2.pane-title.sr-only', { id: 'browser-title' }, 'Project Browser');
   const browserBody = h('div.pane-body');
   const browserSearch = h('input.input', { type: 'search', placeholder: 'Search views, sheets and types', 'aria-label': 'Search the project browser' });
-  const paneBrowser = h('section.pane.pane-browser', { 'aria-labelledby': 'browser-title' }, h('div.pane-head', browserTitle, browserClose), h('div.browser-search', browserSearch), browserBody);
-  const dockSplit = h('div.dock-split', { role: 'separator', 'aria-orientation': 'horizontal', 'aria-label': 'Resize Properties and Project Browser', 'aria-valuemin': '15', 'aria-valuemax': '85', 'aria-valuenow': '52', tabindex: '0' });
-  const dock = h('aside.dock', { 'aria-label': 'Properties and Project Browser' }, paneProps, dockSplit, paneBrowser);
+  const browserPanel = h('div.tab-panel.browser-panel', { id: 'browser-panel', role: 'tabpanel', 'aria-labelledby': 'tab-browser' }, browserTitle, h('div.browser-search', browserSearch), browserBody);
+  const tabBrowser = h(
+    'button.dock-tab',
+    { type: 'button', role: 'tab', id: 'tab-browser', 'aria-selected': 'true', 'aria-controls': 'browser-panel', tabindex: '0', 'data-tip': 'Project Browser', onClick: () => app.selectDockTab('browser') },
+    icon('layers', 14),
+    h('span', 'Browser'),
+  );
+  const tabAssistant = h(
+    'button.dock-tab',
+    { type: 'button', role: 'tab', id: 'tab-assistant', 'aria-selected': 'false', 'aria-controls': 'assistant-panel', tabindex: '-1', 'data-tip': 'Assistant', onClick: () => app.selectDockTab('assistant') },
+    icon('sparkles', 14),
+    h('span', 'Assistant'),
+  );
+  const tablist = h('div.dock-tabs', { role: 'tablist', 'aria-label': 'Project panels', onKeydown: (e) => app.dockTabKey(e) }, tabBrowser, tabAssistant);
+  const lowerClose = h('button.icon-btn.sm', { type: 'button', 'aria-label': 'Hide project panels', 'data-tip': 'Hide project panels', onClick: () => app.togglePane('browser') }, icon('x', 15));
+  const assistantHost = h('div.tab-panel.assistant-host', { id: 'assistant-panel', role: 'tabpanel', 'aria-labelledby': 'tab-assistant', hidden: true });
+  const paneLower = h('section.pane.pane-lower', { 'aria-label': 'Project panels' }, h('div.pane-head', tablist, h('span.grow'), lowerClose), browserPanel, assistantHost);
+  const dockSplit = h('div.dock-split', { role: 'separator', 'aria-orientation': 'horizontal', 'aria-label': 'Resize Properties and project panels', 'aria-valuemin': '15', 'aria-valuemax': '85', 'aria-valuenow': '52', tabindex: '0' });
+  const dock = h('aside.dock', { 'aria-label': 'Properties and project panels' }, paneProps, dockSplit, paneLower);
   const dockResize = h('div.dock-resize', { role: 'separator', 'aria-orientation': 'vertical', 'aria-label': 'Resize side panel', 'aria-valuemin': '200', 'aria-valuemax': '560', 'aria-valuenow': '290', tabindex: '0' });
 
   // Views
@@ -99,6 +121,7 @@ export function buildShell(app) {
     titlebar,
     title,
     account,
+    assistantBtn,
     themeBtn,
     undoBtn,
     redoBtn,
@@ -111,6 +134,10 @@ export function buildShell(app) {
     propsTitle,
     browserBody,
     browserSearch,
+    browserPanel,
+    tabBrowser,
+    tabAssistant,
+    assistantHost,
     vtabs,
     glCanvas,
     overlay,

@@ -168,6 +168,7 @@ export const COMMANDS = {
   closeInactive: { label: 'Close Inactive Views', icon: 'closeHidden', run: (app) => app.closeInactiveViews() },
   toggleProps: { label: 'Properties', icon: 'sliders', keys: 'PP', run: (app) => app.togglePane('props') },
   toggleBrowser: { label: 'Project Browser', icon: 'layers', run: (app) => app.togglePane('browser') },
+  assistant: { label: 'Assistant', icon: 'sparkles', keys: 'AI', run: (app) => app.openAssistant(), desc: 'Ask about the project', search: 'AI chat help adviser' },
   nextView: { label: 'Next View', icon: 'chevron-right', accel: 'Ctrl+Tab', run: (app) => app.cycleView(1) },
 
   // Manage

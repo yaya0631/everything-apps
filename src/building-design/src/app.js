@@ -7,6 +7,7 @@ import { Ribbon } from './ui/ribbon.js';
 import { contextualPanels } from './ui/ribbon-def.js';
 import { PropertiesPanel, pluralLabel } from './ui/properties.js';
 import { ProjectBrowser } from './ui/browser.js';
+import { AssistantPanel } from './ui/assistant.js';
 import { installTooltips, hideTooltip } from './ui/tooltip.js';
 import { showMenu, closeMenus } from './ui/menu.js';
 import { toast, confirmDialog, promptDialog } from './ui/dialog.js';
@@ -74,6 +75,7 @@ export class App {
     this.file = null;
     this.settingsStore = new Settings();
     this.flagsVersion = 0;
+    this.dockTab = 'browser';
   }
 
   get settings() {
@@ -101,6 +103,7 @@ export class App {
     installTooltips(document);
     this.props = new PropertiesPanel(this, this.shell.propsBody);
     this.browser = new ProjectBrowser(this, this.shell.browserBody, this.shell.browserSearch);
+    this.assistant = new AssistantPanel(this, this.shell.assistantHost);
     this.viewport = new Viewport(this, this.shell.canvasWrap, this.shell.glCanvas, this.shell.overlay);
     this.bindKeys();
     this.bindDock();
@@ -166,6 +169,7 @@ export class App {
     this.props.render();
     this.ribbon.refresh();
     this.setPrompt('Ready');
+    this.assistant?.setProject();
     files.scheduleRecovery(this);
   }
 
@@ -189,6 +193,7 @@ export class App {
       files.scheduleRecovery(this);
     }
     if (selChanged) this.selectionChanged();
+    this.assistant?.refresh();
     this.flagsVersion++;
     this.requestRender();
   }
@@ -259,6 +264,7 @@ export class App {
     this.renderViewbar();
     this.renderBrowser();
     this.props.render();
+    this.assistant?.refresh();
     this.updateTitle();
     this.flagsVersion++;
     this.requestRender();
@@ -510,6 +516,7 @@ export class App {
     this.updateContextual();
     this.updateSelInfo();
     this.ribbon.refresh();
+    this.assistant?.refresh();
     if (this.tool instanceof SelectTool || !this.tool) this.setPrompt(this.tool?.prompt || 'Ready');
     this.requestRender();
   }
@@ -1006,24 +1013,123 @@ export class App {
     this.setPrompt(s.enabled !== false ? 'Snaps on' : 'Snaps off');
   }
 
-  togglePane(which) {
+  /** Select the Project Browser or Assistant tab in the lower dock pane. */
+  selectDockTab(tab, { persist = true } = {}) {
+    const assistant = tab === 'assistant';
+    this.dockTab = assistant ? 'assistant' : 'browser';
+    this.shell.tabBrowser.setAttribute('aria-selected', String(!assistant));
+    this.shell.tabAssistant.setAttribute('aria-selected', String(assistant));
+    this.shell.tabBrowser.tabIndex = assistant ? -1 : 0;
+    this.shell.tabAssistant.tabIndex = assistant ? 0 : -1;
+    this.shell.browserPanel.hidden = assistant;
+    this.shell.assistantHost.hidden = !assistant;
+    if (assistant) this.assistant?.refresh();
+    if (persist) this.persistDockState();
+    else this.updateAssistantButton();
+  }
+
+  /** Arrow keys move between the dock tabs, as in a normal tab list. */
+  dockTabKey(e) {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight' && e.key !== 'Home' && e.key !== 'End') return;
+    e.preventDefault();
+    const assistant = e.key === 'ArrowRight' || e.key === 'End' ? true : e.key === 'ArrowLeft' || e.key === 'Home' ? false : this.dockTab === 'assistant';
+    this.selectDockTab(assistant ? 'assistant' : 'browser', { persist: false });
+    (assistant ? this.shell.tabAssistant : this.shell.tabBrowser).focus();
+  }
+
+  updateAssistantButton() {
+    const dock = this.shell.dock;
+    const phone = matchMedia('(max-width: 760px)').matches;
+    const visible = phone
+      ? dock.classList.contains('phone-open') && dock.classList.contains('phone-browser') && this.dockTab === 'assistant'
+      : !this.shell.main.classList.contains('dock-hidden') && !dock.classList.contains('lower-hidden') && this.dockTab === 'assistant';
+    this.shell.assistantBtn.setAttribute('aria-pressed', String(visible));
+  }
+
+  persistDockState() {
+    const dock = this.shell.dock;
+    if (matchMedia('(max-width: 760px)').matches) {
+      // The phone dock is a sheet; keep the desktop layout as it was.
+      this.settingsStore.set('dockState', { ...(this.settings.dockState || {}), tab: this.dockTab });
+    } else {
+      this.settingsStore.set('dockState', {
+        props: !dock.classList.contains('props-hidden'),
+        lower: !dock.classList.contains('lower-hidden'),
+        hidden: this.shell.main.classList.contains('dock-hidden'),
+        tab: this.dockTab,
+      });
+    }
+    this.updateAssistantButton();
+  }
+
+  /** Show a dock pane and select its tab (the Assistant command). */
+  showDockPane(tab) {
     const dock = this.shell.dock;
     const phone = matchMedia('(max-width: 760px)').matches;
     if (phone) {
-      const open = dock.classList.contains('phone-open') && dock.classList.contains(`phone-${which}`);
-      dock.classList.remove('phone-open', 'phone-props', 'phone-browser');
-      if (!open) dock.classList.add('phone-open', `phone-${which}`);
+      dock.classList.remove('phone-props');
+      dock.classList.add('phone-open', 'phone-browser');
+      this.selectDockTab(tab);
       this.renderPhonebar();
+    } else {
+      dock.classList.remove('lower-hidden');
+      this.shell.main.classList.remove('dock-hidden');
+      this.selectDockTab(tab);
+      this.persistDockState();
+    }
+    this.updateAssistantButton();
+  }
+
+  openAssistant() {
+    this.showDockPane('assistant');
+    if (!matchMedia('(max-width: 760px)').matches) this.assistant?.focus();
+  }
+
+  togglePane(which) {
+    const dock = this.shell.dock;
+    const phone = matchMedia('(max-width: 760px)').matches;
+    if (which === 'props') {
+      if (phone) {
+        const open = dock.classList.contains('phone-open') && dock.classList.contains('phone-props');
+        dock.classList.remove('phone-open', 'phone-props', 'phone-browser');
+        if (!open) dock.classList.add('phone-open', 'phone-props');
+        this.renderPhonebar();
+        this.updateAssistantButton();
+        return;
+      }
+      if (this.shell.main.classList.contains('dock-hidden')) {
+        this.shell.main.classList.remove('dock-hidden');
+        dock.classList.remove('props-hidden', 'lower-hidden');
+      } else if (dock.classList.contains('props-hidden')) dock.classList.remove('props-hidden');
+      else if (dock.classList.contains('lower-hidden')) this.shell.main.classList.add('dock-hidden');
+      else dock.classList.add('props-hidden');
+      this.persistDockState();
       return;
     }
-    const cls = which === 'props' ? 'props-hidden' : 'browser-hidden';
-    const other = which === 'props' ? 'browser-hidden' : 'props-hidden';
-    if (dock.classList.contains(cls)) dock.classList.remove(cls);
-    else if (dock.classList.contains(other)) {
-      // Hiding the last pane hides the whole dock.
-      this.shell.main.classList.toggle('dock-hidden');
-    } else dock.classList.add(cls);
-    this.settingsStore.set('dockState', { props: !dock.classList.contains('props-hidden'), browser: !dock.classList.contains('browser-hidden'), hidden: this.shell.main.classList.contains('dock-hidden') });
+    const tab = which === 'assistant' ? 'assistant' : 'browser';
+    if (phone) {
+      const open = dock.classList.contains('phone-open') && dock.classList.contains('phone-browser');
+      const same = open && this.dockTab === tab;
+      dock.classList.remove('phone-open', 'phone-props', 'phone-browser');
+      if (!same) {
+        dock.classList.add('phone-open', 'phone-browser');
+        this.selectDockTab(tab);
+      }
+      this.renderPhonebar();
+      this.updateAssistantButton();
+      return;
+    }
+    const lowerVisible = !this.shell.main.classList.contains('dock-hidden') && !dock.classList.contains('lower-hidden');
+    if (lowerVisible && this.dockTab === tab) {
+      // Hiding the last visible pane hides the whole dock.
+      if (dock.classList.contains('props-hidden')) this.shell.main.classList.add('dock-hidden');
+      else dock.classList.add('lower-hidden');
+    } else {
+      this.shell.main.classList.remove('dock-hidden');
+      dock.classList.remove('lower-hidden');
+      this.selectDockTab(tab);
+    }
+    this.persistDockState();
   }
 
   // Context menu ----------------------------------------------------------------------------------
@@ -1229,9 +1335,12 @@ export class App {
     const s = this.settings.dockState;
     if (s) {
       this.shell.dock.classList.toggle('props-hidden', s.props === false);
-      this.shell.dock.classList.toggle('browser-hidden', s.browser === false);
+      // "browser" is the old name for the lower pane; keep reading it.
+      this.shell.dock.classList.toggle('lower-hidden', (s.lower ?? s.browser) === false);
       this.shell.main.classList.toggle('dock-hidden', !!s.hidden);
     }
+    this.selectDockTab(s?.tab === 'assistant' ? 'assistant' : 'browser', { persist: false });
+    this.updateAssistantButton();
     const w = this.settings.dockWidth;
     if (w) this.shell.root.style.setProperty('--dock-w', `${w}px`);
     const ph = this.settings.propsHeight;
@@ -1300,7 +1409,8 @@ export class App {
     const btn = (label, ic, action, pressed) => h('button.pb-btn', { type: 'button', 'aria-pressed': pressed == null ? null : String(pressed), onClick: action }, icon(ic, 20), h('span', label));
     bar.append(
       btn('Tools', 'wall', () => dialogs.toolsSheet(this)),
-      btn('Views', 'layers', () => this.togglePane('browser'), dock.classList.contains('phone-browser') && dock.classList.contains('phone-open')),
+      btn('Views', 'layers', () => this.togglePane('browser'), dock.classList.contains('phone-browser') && dock.classList.contains('phone-open') && this.dockTab === 'browser'),
+      btn('Assistant', 'sparkles', () => this.togglePane('assistant'), dock.classList.contains('phone-browser') && dock.classList.contains('phone-open') && this.dockTab === 'assistant'),
       btn('Properties', 'sliders', () => this.togglePane('props'), dock.classList.contains('phone-props') && dock.classList.contains('phone-open')),
       btn('Undo', 'undo', () => this.run('undo')),
       btn('Modify', 'modify', () => dialogs.modifySheet(this)),

@@ -59,6 +59,18 @@
   justify-content: flex-end;
 }
 
+.assistant-btn {
+  flex: none;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.assistant-btn[aria-pressed='true'] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
 .app-btn {
   display: inline-flex;
   align-items: center;
@@ -634,14 +646,18 @@ button.rb-panel-title:hover {
   grid-template-rows: 0 0 1fr;
 }
 
-.dock.browser-hidden {
+.dock.lower-hidden {
   grid-template-rows: 1fr 0 0;
 }
 
+.dock.props-hidden.lower-hidden {
+  grid-template-rows: 0 0 0;
+}
+
 .dock.props-hidden .pane-props,
-.dock.browser-hidden .pane-browser,
+.dock.lower-hidden .pane-lower,
 .dock.props-hidden .dock-split,
-.dock.browser-hidden .dock-split {
+.dock.lower-hidden .dock-split {
   display: none;
 }
 
@@ -694,6 +710,62 @@ button.rb-panel-title:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Lower dock pane: Project Browser and Assistant tabs */
+.dock-tabs {
+  flex: 1;
+  display: flex;
+  align-self: stretch;
+  gap: 2px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.dock-tab {
+  flex: 0 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  height: 100%;
+  padding: 0 7px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.dock-tab span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dock-tab:hover {
+  color: var(--fg);
+  background: var(--bg-group);
+}
+
+.dock-tab[aria-selected='true'] {
+  color: var(--accent-text);
+  border-bottom-color: var(--accent);
+}
+
+.dock-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.tab-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
 }
 
 .pane-body {
@@ -1181,7 +1253,7 @@ button.sb-item:hover {
   .dock.phone-open {
     display: grid;
   }
-  .dock.phone-props .pane-browser,
+  .dock.phone-props .pane-lower,
   .dock.phone-props .dock-split,
   .dock.phone-browser .pane-props,
   .dock.phone-browser .dock-split {

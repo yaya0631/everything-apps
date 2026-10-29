@@ -142,3 +142,58 @@ test('the theme follows the user choice', async ({ page }) => {
   await page.getByRole('menuitemradio', { name: 'System' }).click();
   await expect(page.locator('html')).not.toHaveAttribute('data-theme', /./);
 });
+
+test('the assistant opens from the dock and title bar, chooses a model and reads the project', async ({ page }) => {
+  await page.route('https://js.puter.com/**', (route) => route.fulfill({ contentType: 'application/javascript', body: '' }));
+  await page.addInitScript(() => {
+    window.__chatCalls = [];
+    window.puter = {
+      env: 'web',
+      auth: {
+        isSignedIn: () => true,
+        getUser: async () => ({ username: 'tester' }),
+      },
+      ai: {
+        models: async () => [
+          { id: 'no-tools', label: 'No tools', tools: false },
+          { id: 'model-a', label: 'Model A', tools: true },
+        ],
+        chat: async (messages, media, options) => {
+          window.__chatCalls.push({ messages, options });
+          return { message: { role: 'assistant', content: 'Sample House has three levels.' } };
+        },
+      },
+    };
+  });
+  const errors = await openApp(page, '?sample');
+
+  // The Assistant is a first-class dock tab, not a hidden dialog.
+  const tab = page.getByRole('tab', { name: 'Assistant' });
+  await tab.click();
+  await expect(tab).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('#assistant-panel')).toBeVisible();
+  await expect(page.locator('.assistant-context')).toContainText('Sample House');
+
+  // The model list comes from Admin -> AI and the choice is sent with the request.
+  const model = page.locator('.assistant-model');
+  await expect(model).toBeVisible();
+  await expect(model.locator('option')).toHaveCount(2);
+  await model.selectOption('model-a');
+  expect(await page.evaluate(() => localStorage.getItem('bd.assistant.model'))).toBe('model-a');
+  await page.locator('.assistant-input').fill('How many levels are there?');
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await expect(page.locator('.assistant-log')).toContainText('Sample House has three levels.');
+  const call = await page.evaluate(() => window.__chatCalls[0]);
+  expect(call.options.model).toBe('model-a');
+  expect(call.messages[0].role).toBe('system');
+  expect(call.messages[0].content).toContain('Sample House');
+  expect(call.messages.at(-1)).toEqual({ role: 'user', content: 'How many levels are there?' });
+
+  // The pane close button hides the panel; the title bar entry brings it back.
+  await page.getByRole('button', { name: 'Hide project panels' }).click();
+  await expect(page.locator('#assistant-panel')).toBeHidden();
+  await page.locator('.titlebar .assistant-btn').click();
+  await expect(page.locator('#assistant-panel')).toBeVisible();
+  await expect(page.locator('.titlebar .assistant-btn')).toHaveAttribute('aria-pressed', 'true');
+  expect(errors).toEqual([]);
+});
