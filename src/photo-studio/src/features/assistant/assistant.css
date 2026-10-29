@@ -35,7 +35,10 @@
 @media (prefers-reduced-motion: reduce) { .ast-dots i { animation: none; } }
 
 /* Plans */
-.ast-plan { border: 1px solid var(--line-soft); border-radius: 8px; background: var(--surface2); overflow: hidden; }
+/* A long plan keeps its header and Run/Step controls in place while only the
+   steps scroll. The cap also stops the plan from shrinking inside the log. */
+.ast-plan { flex: none; display: flex; flex-direction: column; max-height: min(70dvh, 100%); border: 1px solid var(--line-soft); border-radius: 8px; background: var(--surface2); overflow: hidden; }
+.ast-plan > header, .ast-plan > .ast-text, .ast-plan > .ast-summary, .ast-plan > .ast-ai-note, .ast-plan > .ast-outcome { flex: none; }
 .ast-plan > header { display: flex; align-items: center; gap: 6px; padding: 7px 9px 4px; }
 .ast-plan-title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; }
 .ast-plan-title .icon { flex: none; color: var(--muted); }
@@ -45,7 +48,7 @@
 .ast-plan > .ast-outcome { padding: 0 9px 6px; }
 .ast-ai-note { display: flex; gap: 6px; align-items: flex-start; margin: 0 9px 6px; padding: 5px 7px; border-radius: 4px; background: var(--surface); line-height: 1.4; font-size: 11px; }
 .ast-ai-note .icon { flex: none; margin-top: 1px; color: var(--accent); }
-.ast-steps { list-style: none; margin: 0; padding: 0 6px 6px; display: flex; flex-direction: column; gap: 4px; }
+.ast-steps { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; list-style: none; margin: 0; padding: 0 6px 6px; display: flex; flex-direction: column; gap: 4px; }
 .ast-stage { margin: 3px 0 0; padding: 2px 4px 1px; border-bottom: 1px solid var(--line-soft); }
 .ast-stage:first-child { margin-top: 0; }
 .ast-stage-head { display: flex; align-items: center; gap: 5px; font-size: 11px; letter-spacing: 0.02em; color: var(--text); }
@@ -80,7 +83,7 @@ button.ast-step-name:hover { color: var(--accent); }
 .ast-check { flex-direction: row; align-items: center; gap: 5px; color: var(--text); }
 .ast-wide { grid-column: 1 / -1; }
 .ast-edit-bar { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 6px; }
-.ast-plan-foot { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-top: 1px solid var(--line-soft); background: var(--surface); }
+.ast-plan-foot { flex: none; display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-top: 1px solid var(--line-soft); background: var(--surface); }
 .ast-spacer { flex: 1; }
 .ast-outcome { margin: 0; line-height: 1.4; }
 .ast-running { color: var(--muted); }

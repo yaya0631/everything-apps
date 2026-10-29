@@ -104,6 +104,51 @@ test('a described edit becomes a checked plan that runs as one undo step', async
   expect(JSON.stringify(last.messages)).toContain('Outcome: Done: 2 steps applied');
 });
 
+test('a long plan scrolls its steps while the run controls stay in view', async ({ page }) => {
+  await boot(page, 'default', PUTER);
+  await openImage(page, 200, 150, '#808080', 'photo.png');
+  await openAssistant(page);
+  const steps = Array.from({ length: 24 }, (_, i) => ({
+    action: 'op.add_text',
+    args: { text: `Line ${i + 1}`, size: 20, color: 'white' },
+  }));
+  await script(page, { calls: [{ name: 'propose_plan', args: { title: 'Long plan', steps } }] });
+  await send(page, 'add a lot of text');
+  const plan = page.locator('.ast-plan');
+  await expect(plan.locator('.ast-step')).toHaveCount(24);
+  const metrics = await plan.evaluate((el) => {
+    const stepsEl = el.querySelector<HTMLElement>('.ast-steps')!;
+    const foot = el.querySelector<HTMLElement>('.ast-plan-foot')!;
+    const log = el.closest<HTMLElement>('.ast-log')!;
+    const planBox = el.getBoundingClientRect();
+    const stepsBox = stepsEl.getBoundingClientRect();
+    const footBox = foot.getBoundingClientRect();
+    const logBox = log.getBoundingClientRect();
+    return {
+      stepsScroll: stepsEl.scrollHeight > stepsEl.clientHeight,
+      stepsBottom: stepsBox.bottom,
+      footTop: footBox.top,
+      footBottom: footBox.bottom,
+      planTop: planBox.top,
+      planBottom: planBox.bottom,
+      logTop: logBox.top,
+      logBottom: logBox.bottom,
+    };
+  });
+  expect(metrics.stepsScroll, 'only the steps scroll').toBe(true);
+  expect(metrics.footTop).toBeGreaterThanOrEqual(metrics.stepsBottom - 1);
+  expect(metrics.footTop).toBeGreaterThanOrEqual(metrics.planTop);
+  expect(metrics.footBottom).toBeLessThanOrEqual(metrics.planBottom + 1);
+  expect(metrics.planTop).toBeGreaterThanOrEqual(metrics.logTop - 1);
+  expect(metrics.footBottom, 'the footer is inside the visible log').toBeLessThanOrEqual(metrics.logBottom + 1);
+  // The steps move under a fixed header and footer.
+  await plan.locator('.ast-steps').evaluate((el) => {
+    el.scrollTop = el.scrollHeight;
+  });
+  await expect(plan.locator('.ast-step').last()).toBeInViewport();
+  await expect(plan.getByRole('button', { name: 'Run All' })).toBeInViewport();
+});
+
 test('plans are validated, edited, run step by step and stopped', async ({ page }) => {
   await boot(page, 'default', PUTER);
   await openImage(page, 160, 120, '#406080', 'photo.png');
