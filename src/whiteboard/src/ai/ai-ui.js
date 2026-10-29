@@ -305,6 +305,14 @@ export function createAI({
     dialogBoards = new WeakMap(),
     observed = new WeakSet(),
     closed = new WeakSet();
+  // The person's chosen AI model (personal boards only; organization boards
+  // use the model the administrator chose in Admin → AI).
+  let chosenModel = "";
+  try {
+    chosenModel = localStorage.getItem("whiteboard:assistant:model") || "";
+  } catch {
+    /* storage blocked */
+  }
   function watchDialog(d) {
     if (observed.has(d)) return;
     observed.add(d);
@@ -405,14 +413,14 @@ export function createAI({
       // Signing in can reveal an organization, whose policy then applies.
       if (org.info?.role) return request(task, prompt, image);
     }
+    const chatOptions = { normalize: true };
+    if (chosenModel) chatOptions.model = chosenModel;
     if (image) {
       const blob = await (await fetch(image)).blob();
       const file = new File([blob], "notes.jpg", { type: blob.type });
-      return replyText(
-        await p.ai.chat(prompt, file, false, { normalize: true }),
-      );
+      return replyText(await p.ai.chat(prompt, file, false, chatOptions));
     }
-    return replyText(await p.ai.chat(prompt, false, { normalize: true }));
+    return replyText(await p.ai.chat(prompt, false, chatOptions));
   }
   function progress(d, message) {
     const out = d.querySelector("#ai-status");
@@ -463,10 +471,11 @@ export function createAI({
     open() {
       const blocked = availability();
       const selected = new Set(selection()),
-        selectedCount = selected.size;
+        selectedCount = selected.size,
+        personal = !org.info?.role || org.info.role === "guest";
       return modal(
         "AI assistant",
-        `<p class="dialog-copy">${t(org.info?.role && org.info.role !== "guest" ? "Requests go through your organization, which controls these features and records their use in the audit log." : "Requests use Puter AI with your Puter account. Board content you choose is sent to the AI model.")}</p>${blocked ? `<p class="dialog-copy" role="alert">${t(blocked)}</p>` : ""}<div class="ai-actions"><button class="secondary" data-ai="summarize" ${blocked ? "disabled" : ""}>${icon("text-quote")}<span><strong>${t("Summarize")}</strong><small>${t(selectedCount ? "The selected objects" : "The whole board")}</small></span></button><button class="secondary" data-ai="themes" ${blocked || selectedCount < 2 ? "disabled" : ""}>${icon("group")}<span><strong>${t("Group into themes")}</strong><small>${t("Select two or more sticky notes")}</small></span></button><button class="secondary" data-ai="handwriting" ${blocked ? "disabled" : ""}>${icon("scan-text")}<span><strong>${t("Photo to sticky notes")}</strong><small>${t("Turn handwritten notes into digital ones")}</small></span></button><button class="secondary" data-ai="generate" ${blocked ? "disabled" : ""}>${icon("sparkles")}<span><strong>${t("Generate ideas")}</strong><small>${t("Sticky notes from a prompt")}</small></span></button><button class="secondary" data-ai="agent" ${blocked ? "disabled" : ""}>${icon("sparkles")}<span><strong>${t("Build or edit with AI")}</strong><small>${t("Describe a multi-step change")}</small></span></button></div>${org.info?.role ? "" : `<label class="check-field"><input type="checkbox" id="ai-enabled" ${personalAIEnabled() ? "checked" : ""}><span>${t("Allow AI features on this device")}</span></label>`}<div id="ai-work"></div><p id="ai-status" role="status" aria-live="polite"></p>`,
+        `<p class="dialog-copy">${t(org.info?.role && org.info.role !== "guest" ? "Requests go through your organization, which controls these features and records their use in the audit log." : "Requests use Puter AI with your Puter account. Board content you choose is sent to the AI model.")}</p>${blocked ? `<p class="dialog-copy" role="alert">${t(blocked)}</p>` : ""}${personal && !blocked ? `<label class="field" id="ai-model-field" hidden>${t("AI model")}<select id="ai-model" aria-label="${t("AI model")}"></select></label>` : ""}<div class="ai-actions"><button class="secondary" data-ai="summarize" ${blocked ? "disabled" : ""}>${icon("text-quote")}<span><strong>${t("Summarize")}</strong><small>${t(selectedCount ? "The selected objects" : "The whole board")}</small></span></button><button class="secondary" data-ai="themes" ${blocked || selectedCount < 2 ? "disabled" : ""}>${icon("group")}<span><strong>${t("Group into themes")}</strong><small>${t("Select two or more sticky notes")}</small></span></button><button class="secondary" data-ai="handwriting" ${blocked ? "disabled" : ""}>${icon("scan-text")}<span><strong>${t("Photo to sticky notes")}</strong><small>${t("Turn handwritten notes into digital ones")}</small></span></button><button class="secondary" data-ai="generate" ${blocked ? "disabled" : ""}>${icon("sparkles")}<span><strong>${t("Generate ideas")}</strong><small>${t("Sticky notes from a prompt")}</small></span></button><button class="secondary" data-ai="agent" ${blocked ? "disabled" : ""}>${icon("sparkles")}<span><strong>${t("Build or edit with AI")}</strong><small>${t("Describe a multi-step change")}</small></span></button></div>${org.info?.role ? "" : `<label class="check-field"><input type="checkbox" id="ai-enabled" ${personalAIEnabled() ? "checked" : ""}><span>${t("Allow AI features on this device")}</span></label>`}<div id="ai-work"></div><p id="ai-status" role="status" aria-live="polite"></p>`,
         (d) => {
           watchDialog(d);
           // Keep the scope promised by the action, even if remote changes
@@ -489,6 +498,50 @@ export function createAI({
             // The dialog opens again with the new setting; focus stays on it.
             api.open()?.querySelector("#ai-enabled")?.focus();
           });
+          // Offer the person's real server models and remember their choice.
+          // The field stays hidden until a model list arrives, so a host
+          // without a list (or with only non-tool models) shows no empty box.
+          const modelField = d.querySelector("#ai-model-field");
+          const modelSel = d.querySelector("#ai-model");
+          if (modelField && modelSel) {
+            const p = puter();
+            if (p?.ai?.models) {
+              p.ai
+                .models()
+                .then((list) => {
+                  // A model that cannot call tools cannot run the agent.
+                  const usable = (Array.isArray(list) ? list : []).filter(
+                    (m) =>
+                      m &&
+                      typeof m.id === "string" &&
+                      m.id.trim() &&
+                      m.tools !== false,
+                  );
+                  if (!usable.length) return;
+                  if (!usable.some((m) => m.id === chosenModel))
+                    chosenModel = usable[0].id;
+                  modelSel.replaceChildren(
+                    ...usable.map((m) => {
+                      const option = d.ownerDocument.createElement("option");
+                      option.value = m.id;
+                      option.textContent = m.label || m.id;
+                      return option;
+                    }),
+                  );
+                  modelSel.value = chosenModel;
+                  modelField.hidden = false;
+                })
+                .catch(() => {
+                  modelField.hidden = true;
+                });
+            }
+            modelSel.addEventListener("change", () => {
+              chosenModel = modelSel.value;
+              try {
+                localStorage.setItem("whiteboard:assistant:model", chosenModel);
+              } catch {}
+            });
+          }
           d.querySelectorAll("[data-ai]").forEach((el) => {
             el.onclick = () => d.dataset.aiBusy || api[el.dataset.ai](d);
           });
@@ -986,6 +1039,7 @@ addTranslations({
   "Your request changed while AI was working. It has been kept. Generate again to use it.":
     "Votre demande a changé pendant le travail de l’IA. Elle a été conservée. Relancez la génération pour l’utiliser.",
   "AI assistant": "Assistant IA",
+  "AI model": "Modèle d’IA",
   "Requests go through your organization, which controls these features and records their use in the audit log.":
     "Les demandes passent par votre organisation, qui contrôle ces fonctions et en consigne l’utilisation dans le journal d’audit.",
   "Requests use Puter AI with your Puter account. Board content you choose is sent to the AI model.":

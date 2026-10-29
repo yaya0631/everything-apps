@@ -24,33 +24,127 @@ export function colorFor(name) {
   return Object.hasOwn(COLOR_NAMES, key) ? COLOR_NAMES[key] : COLORS[0];
 }
 
+const TOOL_NAMES = new Set([
+  "get_board",
+  "find_objects",
+  "read_object",
+  "add_notes",
+  "update_objects",
+  "delete_objects",
+  "create_frame",
+  "arrange_grid",
+  "finish",
+]);
+
+// Keys that describe the call itself, never tool arguments.
+const META_KEYS = new Set([
+  "tool",
+  "type",
+  "action",
+  "name",
+  "function",
+  "args",
+  "arguments",
+  "message",
+]);
+
+/** Read an args/arguments field, whether the model sent an object or a JSON string. */
+function toolArguments(value) {
+  let args = {};
+  if (!value || typeof value !== "object") return args;
+  for (const candidate of [value.args, value.arguments]) {
+    if (candidate && typeof candidate === "object" && !Array.isArray(candidate))
+      args = { ...args, ...candidate };
+    else if (typeof candidate === "string" && candidate.trim()) {
+      try {
+        const parsed = JSON.parse(candidate);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+          args = { ...args, ...parsed };
+      } catch {
+        /* not an arguments object */
+      }
+    }
+  }
+  return args;
+}
+
+/** Normalize one parsed value into { tool, args } or null when it is not a tool call. */
+function normalizeTool(value) {
+  // Some providers wrap a single call in an array.
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const normalized = normalizeTool(entry);
+      if (normalized) return normalized;
+    }
+    return null;
+  }
+  if (!value || typeof value !== "object") return null;
+  // OpenAI-style tool_calls.
+  if (Array.isArray(value.tool_calls)) {
+    for (const call of value.tool_calls) {
+      const fn = call?.function || call;
+      if (typeof fn?.name !== "string" || !TOOL_NAMES.has(fn.name)) continue;
+      return { tool: fn.name, args: toolArguments(fn) };
+    }
+  }
+  let tool = null;
+  if (typeof value.tool === "string" && value.tool.trim())
+    tool = value.tool.trim();
+  else if (typeof value.type === "string" && TOOL_NAMES.has(value.type))
+    tool = value.type;
+  else if (typeof value.action === "string" && TOOL_NAMES.has(value.action))
+    tool = value.action;
+  else if (typeof value.name === "string" && TOOL_NAMES.has(value.name))
+    tool = value.name;
+  else if (
+    value.function &&
+    typeof value.function === "object" &&
+    typeof value.function.name === "string" &&
+    TOOL_NAMES.has(value.function.name)
+  )
+    tool = value.function.name;
+  if (!tool) return null;
+  let args = toolArguments(value);
+  if (value.function && typeof value.function === "object")
+    args = { ...toolArguments(value.function), ...args };
+  // Top-level keys that are not meta become arguments, so
+  // {"type":"add_notes","notes":[...]} works as well as {"tool":"add_notes","args":{notes:[...]}}.
+  for (const [key, val] of Object.entries(value)) {
+    if (META_KEYS.has(key)) continue;
+    if (!(key in args)) args[key] = val;
+  }
+  // A finish call carries its message as a meta field, not an argument.
+  if (tool === "finish" && typeof args.message !== "string" && typeof value.message === "string")
+    args.message = value.message;
+  return { tool, args };
+}
+
 /** Read a reply as one { tool, args } object, or { message } when it is prose. */
 export function parseAgentReply(text) {
   const source = String(text || "").trim();
   if (!source) throw Error("The AI returned nothing.");
+  let value;
   try {
-    const value = JSON.parse(source);
-    if (value && typeof value === "object") {
-      if (typeof value.tool === "string")
-        return {
-          tool: value.tool,
-          args: value.args && typeof value.args === "object" ? value.args : {},
-        };
-      if (typeof value.message === "string")
-        return { tool: "finish", args: { message: value.message } };
-    }
-  } catch {}
-  // A JSON object wrapped in prose or a fence.
+    value = JSON.parse(source);
+  } catch {
+    value = null;
+  }
+  if (value) {
+    const normalized = normalizeTool(value);
+    if (normalized) return normalized;
+    if (typeof value.message === "string")
+      return { tool: "finish", args: { message: value.message } };
+  }
+  // A JSON object wrapped in prose or a code fence.
   const start = source.indexOf("{"),
     end = source.lastIndexOf("}");
   if (start >= 0 && end > start) {
     try {
-      const value = JSON.parse(source.slice(start, end + 1));
-      if (value && typeof value === "object" && typeof value.tool === "string")
-        return {
-          tool: value.tool,
-          args: value.args && typeof value.args === "object" ? value.args : {},
-        };
+      value = JSON.parse(source.slice(start, end + 1));
+      const normalized = normalizeTool(value);
+      if (normalized) return normalized;
+      if (value && typeof value.message === "string")
+        return { tool: "finish", args: { message: value.message } };
     } catch {}
   }
   return { tool: "finish", args: { message: source.slice(0, 4000) } };

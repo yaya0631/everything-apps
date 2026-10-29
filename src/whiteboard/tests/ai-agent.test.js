@@ -62,6 +62,76 @@ test("whiteboard agent protocol", async (t) => {
   );
 
   await t.test(
+    "tolerates the model's alternate tool-call shapes",
+    () => {
+      // `type` field with top-level arguments (what the model actually emitted).
+      assert.deepEqual(
+        parseAgentReply(
+          '{"type":"add_notes","notes":[{"text":"Risk one","color":"blue"},{"text":"Risk two","color":"yellow"}],"columns":2,"x":30,"y":20}',
+        ),
+        {
+          tool: "add_notes",
+          args: {
+            notes: [
+              { text: "Risk one", color: "blue" },
+              { text: "Risk two", color: "yellow" },
+            ],
+            columns: 2,
+            x: 30,
+            y: 20,
+          },
+        },
+      );
+      // `action` field with arguments merged from the top level.
+      assert.deepEqual(
+        parseAgentReply('{"action":"create_frame","title":"Ideas","ids":["a","b"]}'),
+        { tool: "create_frame", args: { title: "Ideas", ids: ["a", "b"] } },
+      );
+      // OpenAI-style tool_calls.
+      assert.deepEqual(
+        parseAgentReply(
+          JSON.stringify({
+            tool_calls: [
+              {
+                function: {
+                  name: "find_objects",
+                  arguments: JSON.stringify({ query: "launch", limit: 10 }),
+                },
+              },
+            ],
+          }),
+        ),
+        { tool: "find_objects", args: { query: "launch", limit: 10 } },
+      );
+      // Arguments sent as a JSON string, and a single call wrapped in an array.
+      assert.deepEqual(
+        parseAgentReply(
+          '{"tool":"add_notes","arguments":"{\\"notes\\":[{\\"text\\":\\"One\\"}]}"}',
+        ),
+        { tool: "add_notes", args: { notes: [{ text: "One" }] } },
+      );
+      assert.deepEqual(
+        parseAgentReply('[{"tool":"get_board","args":{}}]'),
+        { tool: "get_board", args: {} },
+      );
+      // A finish call keeps its message whether it is meta or an argument.
+      assert.deepEqual(parseAgentReply('{"tool":"finish","message":"Done."}'), {
+        tool: "finish",
+        args: { message: "Done." },
+      });
+      assert.deepEqual(parseAgentReply('{"type":"finish","message":"Done."}'), {
+        tool: "finish",
+        args: { message: "Done." },
+      });
+      // A non-tool object still becomes a final answer, never a raw JSON leak.
+      assert.deepEqual(parseAgentReply('{"type":"note","text":"hello"}'), {
+        tool: "finish",
+        args: { message: '{"type":"note","text":"hello"}' },
+      });
+    },
+  );
+
+  await t.test(
     "summarizes and finds objects without sending the whole board",
     () => {
       const note = item("note", 10, 20, {
