@@ -174,7 +174,11 @@ test('plans are validated, edited, run step by step and stopped', async ({ page 
   await send(page, 'do things');
   const plan = page.locator('.ast-plan');
   const steps = plan.locator('.ast-step');
-  await expect(steps).toHaveCount(6);
+  // Each step names a different command, and the plan only renders after the
+  // Assistant has loaded every command's settings. A dev server transforms
+  // those modules one at a time, so the first plan can take longer than the
+  // default assertion budget; a production build ships them pre-bundled.
+  await expect(steps).toHaveCount(6, { timeout: 90_000 });
   await expect(steps.nth(0)).toContainText('needs a selection, and there is none at this point');
   await expect(steps.nth(1)).toContainText('There is no command “filter.apply.not-a-filter”');
   await expect(steps.nth(2)).toContainText('must be a number');
